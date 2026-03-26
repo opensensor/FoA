@@ -119,7 +119,7 @@ pub enum RxRouterOperationError {
 trait Router<'foa, Operation: RxRouterOperation> {
     /// Receive a frame from the specified [RxRouterQueue].
     fn receive(&self, router_queue: RxRouterQueue)
-        -> DynamicReceiveFuture<'_, ReceivedFrame<'foa>>;
+    -> DynamicReceiveFuture<'_, ReceivedFrame<'foa>>;
     //// Route a frame to a specific queue.
     fn route_frame(&self, frame: ReceivedFrame<'foa>) -> Result<(), RxRouterRoutingError>;
     /// Get the operation state for the specified [RxRouterQueue].
@@ -307,7 +307,9 @@ impl<Operation: RxRouterOperation> RxRouterScopedOperation<'_, '_, '_, Operation
     /// If the transition is not possible, this will restore the previously active operation and
     /// return a [TransitionNotPossibleError].
     pub fn transition(&mut self, operation: Operation) -> Result<(), TransitionNotPossibleError> {
-        let previous_operation = self.stop_operation_internal().expect("The only way this could be None is, if this function was called during Drop.");
+        let previous_operation = self
+            .stop_operation_internal()
+            .expect("The only way this could be None is, if this function was called during Drop.");
         if self.can_start_operation(operation).is_ok() {
             self.start_operation_internal(operation);
             Ok(())
@@ -389,7 +391,8 @@ impl<'foa, 'router, Operation: RxRouterOperation> RxRouterEndpoint<'foa, 'router
     pub fn try_start_operation<'endpoint>(
         &'endpoint mut self,
         operation: Operation,
-    ) -> Result<RxRouterScopedOperation<'foa, 'router, 'endpoint, Operation>, RxRouterOperationError> {
+    ) -> Result<RxRouterScopedOperation<'foa, 'router, 'endpoint, Operation>, RxRouterOperationError>
+    {
         self.can_start_operation(operation)?;
         self.start_operation_internal(operation);
         Ok(RxRouterScopedOperation { endpoint: self })

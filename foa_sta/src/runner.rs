@@ -1,36 +1,40 @@
-use core::marker::PhantomData;
+use core::{future::pending, marker::PhantomData};
 
 use embassy_futures::{
     join::join,
-    select::{select3, Either3},
+    select::{Either3, select3},
 };
 use embassy_net::driver::{HardwareAddress, LinkState};
 use embassy_net_driver_channel::{RxRunner, StateRunner, TxRunner};
-use embassy_time::{Duration, Ticker};
+use embassy_time::Ticker;
 use ethernet::{Ethernet2Frame, Ethernet2Header};
 use foa::{
-    esp_wifi_hal::{RxFilterBank, TxParameters, WiFiRate},
+    ReceivedFrame, RetryBehaviour, RxQueueReceiver,
+    esp_wifi_hal::{
+        ll::EdcaAccessCategory,
+        prelude::{RxFilterBank, TxMacParameters, TxPlcpParameters, WiFiRate},
+    },
     util::{operations::deauthenticate, rx_router::RxRouterQueue},
-    LMacInterfaceControl, ReceivedFrame, RxQueueReceiver,
 };
+use futures_util::FutureExt;
 use ieee80211::{
+    GenericFrame,
     common::{DataFrameSubtype, FCFFlags, FrameType, SequenceControl},
     crypto::{CryptoHeader, MicState},
     data_frame::{
-        header::DataFrameHeader, DataFrame, DataFrameReadPayload, PotentiallyWrappedPayload,
+        DataFrame, DataFrameReadPayload, PotentiallyWrappedPayload, header::DataFrameHeader,
     },
     mac_parser::MACAddress,
     match_frames,
     mgmt_frame::{BeaconFrame, DeauthenticationFrame},
     scroll::{Pread, Pwrite},
-    GenericFrame,
 };
 use llc_rs::SnapLlcFrame;
 
 use crate::{
+    MTU, StaTxRx,
     connection_state::{ConnectionInfo, ConnectionState, DisconnectionReason},
     rx_router::{StaRxRouterEndpoint, StaRxRouterInput, StaRxRouterOperation},
-    StaTxRx, MTU,
 };
 enum ConnectionRxEvent {
     Disconnected(DisconnectionReason),
@@ -74,10 +78,13 @@ impl ConnectionRunner<'_, '_> {
     async fn run_connection(
         &self,
         ConnectionInfo {
-            bss, own_address, ..
+            bss,
+            own_address,
+            connection_config,
+            ..
         }: &ConnectionInfo,
     ) -> DisconnectionReason {
-        let mut beacon_timeout = Ticker::every(Duration::from_secs(3));
+        let mut beacon_timeout = connection_config.beacon_timeout.map(Ticker::every);
         loop {
             // We wait for one of three things to happen.
             // 1. An off channel request arrives, which we grant immediately and wait for its
@@ -89,7 +96,13 @@ impl ConnectionRunner<'_, '_> {
                     .interface_control
                     .wait_for_off_channel_request(),
                 self.rx_router_endpoint.receive(),
-                beacon_timeout.next(),
+                async {
+                    if let Some(ref mut ticker) = beacon_timeout {
+                        ticker.next().await
+                    } else {
+                        pending().await
+                    }
+                },
             )
             .await
             {
@@ -104,9 +117,11 @@ impl ConnectionRunner<'_, '_> {
                     if let Some(connection_rx_event) = self.handle_bg_rx(buffer) {
                         match connection_rx_event {
                             ConnectionRxEvent::Disconnected(disconnection_reason) => {
-                                return disconnection_reason
+                                return disconnection_reason;
                             }
-                            ConnectionRxEvent::BeaconReceived => beacon_timeout.reset(),
+                            ConnectionRxEvent::BeaconReceived => {
+                                beacon_timeout.as_mut().map(Ticker::reset);
+                            }
                         }
                     }
                 }
@@ -114,7 +129,7 @@ impl ConnectionRunner<'_, '_> {
                     // Since we assume the network can either not or barely hear us, we use the
                     // lowest PHY rate.
                     deauthenticate(
-                        self.sta_tx_rx.interface_control,
+                        self.sta_tx_rx.tx_endpoint,
                         bss.bssid,
                         *own_address,
                         true,
@@ -135,15 +150,18 @@ impl ConnectionRunner<'_, '_> {
     ) -> ! {
         loop {
             let msdu = tx_runner.tx_buf().await;
+
             // We don't want to accidentally transmit a MSDU, while we're not on channel.
-            sta_tx_rx
-                .interface_control
-                .wait_for_off_channel_completion()
-                .await;
+            if sta_tx_rx.in_off_channel_operation() {
+                sta_tx_rx
+                    .interface_control
+                    .wait_for_off_channel_completion()
+                    .await;
+            }
             let Ok(ethernet_frame) = msdu.pread::<Ethernet2Frame>(0) else {
                 continue;
             };
-            let mut tx_buf = sta_tx_rx.interface_control.alloc_tx_buf().await;
+            let mut tx_buf = sta_tx_rx.tx_endpoint.alloc_tx_buf().await;
             let data_frame = DataFrame {
                 header: DataFrameHeader {
                     subtype: DataFrameSubtype::Data,
@@ -183,25 +201,28 @@ impl ConnectionRunner<'_, '_> {
                             0,
                         )
                         .ok()
-                        .map(|written| (written, Some(key_slot)))
+                        .map(|written| (written, Some(key_slot as u8)))
                 } else {
                     tx_buf.pwrite(data_frame, 0).ok().zip(Some(None))
                 })
             else {
                 continue;
             };
-            let _ = sta_tx_rx
-                .interface_control
-                .transmit(
-                    &mut tx_buf[..written],
-                    &TxParameters {
-                        rate: sta_tx_rx.phy_rate(),
-                        key_slot,
-                        ..LMacInterfaceControl::DEFAULT_TX_PARAMETERS
-                    },
-                    true,
-                )
-                .await;
+            let _ = sta_tx_rx.tx_endpoint.transmit_edca(
+                EdcaAccessCategory::default(),
+                tx_buf,
+                written,
+                TxPlcpParameters {
+                    rate: sta_tx_rx.phy_rate(),
+                    ..Default::default()
+                },
+                TxMacParameters {
+                    key_slot_index: key_slot,
+                    wait_for_ack: true,
+                    ..Default::default()
+                },
+                RetryBehaviour::RetryUntil(7),
+            );
             trace!(
                 "Transmitted {} bytes to {}",
                 msdu.len(),
@@ -234,13 +255,16 @@ impl ConnectionRunner<'_, '_> {
                 }
                 Either3::Third(_) => unreachable!(),
             };
+            if tx_runner.try_tx_buf().is_some() {
+                tx_runner.tx_done();
+            }
             // We reset all connection specific parameters here.
             // Unlocking the channel was already done, by any path leading to disconnection.
             self.sta_tx_rx.interface_control.unlock_channel();
             self.sta_tx_rx.reset_phy_rate();
             self.sta_tx_rx
                 .interface_control
-                .set_filter_status(RxFilterBank::BSSID, false);
+                .clear_filter(RxFilterBank::Bssid);
             self.sta_tx_rx
                 .connection_state
                 .signal_state(ConnectionState::Disconnected(disconnection_reason));
@@ -358,7 +382,10 @@ impl RoutingRunner<'_, '_> {
             let Ok(generic_frame) = GenericFrame::new(borrowed_buffer.mpdu_buffer(), false) else {
                 continue;
             };
-            trace!("RX type: {:?}", generic_frame.frame_control_field().frame_type());
+            trace!(
+                "RX type: {:?}",
+                generic_frame.frame_control_field().frame_type()
+            );
             let address_1 = generic_frame.address_1();
             // Here we toss out frames, where the first address doesn't meet one of these conditions:
             // 1. Is multicast
@@ -422,13 +449,12 @@ pub struct StaRunner<'foa, 'vif> {
 }
 impl StaRunner<'_, '_> {
     /// Run the station interface.
-    pub async fn run(&mut self) -> ! {
+    pub fn run(&mut self) -> impl Future<Output = ()> {
         debug!("STA runner active.");
         join(
             self.connection_runner.run(&mut self.tx_runner),
             self.routing_runner.run(),
         )
-        .await;
-        unreachable!()
+        .map(|_| ())
     }
 }

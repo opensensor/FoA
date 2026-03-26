@@ -1,10 +1,10 @@
 use embassy_time::{Duration, WithTimeout};
-use esp_wifi_hal::ScanningMode;
+use esp_wifi_hal::prelude::*;
 use ieee80211::{match_frames, mgmt_frame::BeaconFrame};
 
 use crate::{
-    util::rx_router::{HasScanOperation, RxRouterEndpoint, RxRouterScopedOperation},
     LMacError, LMacInterfaceControl, ReceivedFrame,
+    util::rx_router::{HasScanOperation, RxRouterEndpoint, RxRouterScopedOperation},
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -92,7 +92,7 @@ pub async fn scan<'foa, 'vif, 'params, Operation: HasScanOperation, Res>(
     // Determine the channels, that should be scanned through the strategy.
     let channels = match scan_config.strategy {
         ScanStrategy::Single(channel) => &[channel],
-        ScanStrategy::CurrentChannel => &[interface_control.get_current_channel()],
+        ScanStrategy::CurrentChannel => &[interface_control.get_channel()],
         ScanStrategy::Linear => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13].as_slice(),
         ScanStrategy::NonOverlappingFirst => [1, 6, 11, 2, 7, 12, 3, 8, 13, 4, 9, 5, 10].as_slice(),
         ScanStrategy::Custom(channels) => channels,

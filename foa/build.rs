@@ -1,4 +1,4 @@
-use esp_config::{generate_config, Validator, Value};
+use esp_config::{Validator, Value, generate_config};
 
 macro_rules! gen_config_opt {
     ($name:expr, $description:expr, $default_value:expr, $validator:expr) => {
@@ -9,7 +9,7 @@ macro_rules! gen_config_opt {
             constraint: Some($validator),
             stability: esp_config::Stability::Stable("0.1.0".to_string()),
             active: true,
-            display_hint: esp_config::DisplayHint::None
+            display_hint: esp_config::DisplayHint::None,
         }
     };
 }
@@ -35,7 +35,7 @@ fn main() {
                 "Amount of TX buffers",
                 Value::Integer(10),
                 Validator::PositiveInteger
-            )
+            ),
         ],
         false,
         true,

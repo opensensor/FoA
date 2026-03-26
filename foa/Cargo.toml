@@ -14,7 +14,7 @@ embassy-sync = "0.7.2"
 embassy-futures = "0.1.2"
 
 esp-hal = "1.0.0"
-esp-wifi-hal = "0.1.6"
+esp-wifi-hal = { path = "../../esp-wifi-hal/esp-wifi-hal/" }
 static_cell = "2.1.1"
 critical-section = "1.2.0"
 portable-atomic = "1.11.1"
@@ -22,9 +22,10 @@ esp-config = "0.6.0"
 defmt-or-log = { version = "0.2.2", default-features = false }
 defmt = { version = "1.0.1", optional = true }
 embassy-time = "0.5.0"
-heapless = "0.9.1"
+heapless = { version = "0.9.1", features = ["defmt"] }
 ieee80211 = "0.5.9"
 log = { version = "0.4.28", optional = true }
+futures-util = { version = "0.3.32", default-features = false }
 
 [build-dependencies]
 esp-config = { version = "0.6.0", features = ["build"] }
@@ -33,7 +34,12 @@ esp-config = { version = "0.6.0", features = ["build"] }
 arc_buffers = []
 
 log = ["dep:log", "defmt-or-log/log", "esp-wifi-hal/log"]
-defmt = ["dep:defmt", "defmt-or-log/defmt", "esp-wifi-hal/defmt"]
+defmt = [
+    "dep:defmt",
+    "defmt-or-log/defmt",
+    "esp-wifi-hal/defmt",
+    "esp-hal/defmt",
+]
 
 esp32 = ["esp-hal/esp32", "esp-wifi-hal/esp32"]
 esp32s2 = ["esp-hal/esp32s2", "esp-wifi-hal/esp32s2"]

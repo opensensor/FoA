@@ -18,7 +18,7 @@ macro_rules! mk_static {
 }
 
 #[embassy_executor::task]
-async fn foa_task(mut runner: FoARunner<'static>) -> ! {
+async fn foa_task(mut runner: FoARunner<'static>) {
     runner.run().await
 }
 #[embassy_executor::task]
@@ -35,11 +35,7 @@ async fn main(spawner: Spawner) {
     esp_rtos::start(timg0.timer0);
 
     let foa_resources = mk_static!(FoAResources, FoAResources::new());
-    let ([awdl_vif, ..], foa_runner) = foa::init(
-        foa_resources,
-        peripherals.WIFI,
-        peripherals.ADC2,
-    );
+    let ([awdl_vif, ..], foa_runner) = foa::init(foa_resources, peripherals.WIFI);
     spawner.spawn(foa_task(foa_runner)).unwrap();
     let awdl_vif = mk_static!(VirtualInterface<'static>, awdl_vif);
     let awdl_resources = mk_static!(AwdlResources, AwdlResources::new());

@@ -10,6 +10,7 @@ use embassy_sync::{
     blocking_mutex::raw::NoopRawMutex,
     channel::{self, Channel, DynamicReceiver, DynamicSender},
 };
+use futures_util::FutureExt;
 
 use crate::TX_BUFFER_SIZE;
 
@@ -62,14 +63,24 @@ pub(crate) struct DynTxBufferManager<'res> {
     buffer_receiver: DynamicReceiver<'res, NonNull<[u8; TX_BUFFER_SIZE]>>,
 }
 impl<'res> DynTxBufferManager<'res> {
-    /// Allocate a new [TxBuffer].
+    /// Allocate a [TxBuffer].
     ///
     /// This will wait for a new buffer to become available from the buffer queue and can't fail.
-    pub async fn alloc(&self) -> TxBuffer<'res> {
-        TxBuffer {
-            buffer: self.buffer_receiver.receive().await,
+    pub fn alloc(&self) -> impl Future<Output = TxBuffer<'res>> + use<'res, '_> {
+        self.buffer_receiver.receive().map(|buffer| TxBuffer {
+            buffer,
             sender: self.buffer_sender,
-        }
+        })
+    }
+    /// Try allocating a [TxBuffer].
+    pub fn try_alloc(&self) -> Option<TxBuffer<'res>> {
+        self.buffer_receiver
+            .try_receive()
+            .ok()
+            .map(|buffer| TxBuffer {
+                buffer,
+                sender: self.buffer_sender,
+            })
     }
 }
 

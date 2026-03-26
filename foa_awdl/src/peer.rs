@@ -15,7 +15,7 @@ use awdl_frame_parser::{
 };
 use defmt_or_log::debug;
 use embassy_time::{Duration, Instant};
-use foa::esp_wifi_hal::WiFiRate;
+use foa::esp_wifi_hal::prelude::WiFiRate;
 use ieee80211::{common::TU, mac_parser::MACAddress};
 
 /// The state of overlapping slots between us and a peer.

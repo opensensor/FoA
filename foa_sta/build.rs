@@ -1,4 +1,4 @@
-use esp_config::{generate_config, ConfigOption, Validator, Value};
+use esp_config::{ConfigOption, Validator, Value, generate_config};
 
 fn main() {
     generate_config(

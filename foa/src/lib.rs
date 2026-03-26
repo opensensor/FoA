@@ -31,14 +31,12 @@ use core::{array, mem};
 use embassy_sync::{
     blocking_mutex::raw::NoopRawMutex,
     channel::{Channel, DynamicReceiver},
+    mutex::Mutex,
 };
 use esp_config::esp_config_int;
-use esp_hal::peripherals::{ADC2, WIFI};
-use esp_wifi_hal::{RxFilterBank, ScanningMode, WiFi, WiFiResources};
+use esp_hal::peripherals::WIFI;
+use esp_wifi_hal::prelude::*;
 use lmac::SharedLMacState;
-
-#[cfg(not(feature = "arc_buffers"))]
-use esp_wifi_hal::BorrowedBuffer;
 
 #[macro_use]
 extern crate defmt_or_log;
@@ -48,17 +46,27 @@ mod lmac;
 #[cfg(feature = "arc_buffers")]
 mod rx_arc_pool;
 mod tx_buffer_management;
+mod tx_queue;
 
 pub use bg_task::FoARunner;
 pub use lmac::*;
+use portable_atomic::AtomicBool;
 #[cfg(feature = "arc_buffers")]
 pub use rx_arc_pool::RxArcBuffer;
 pub use tx_buffer_management::TxBuffer;
+pub use tx_queue::{
+    PendingTransmission, PendingTransmissionStatus, RetryBehaviour, TxEndpoint, TxReturnData,
+};
 
 pub use esp_wifi_hal;
 #[cfg(feature = "arc_buffers")]
 use rx_arc_pool::RxArcPool;
 use tx_buffer_management::TxBufferManager;
+
+use crate::{
+    bg_task::{RxRunner, TxRunner},
+    tx_queue::{TxQueue, TxQueueRunner},
+};
 
 pub mod util;
 
@@ -81,13 +89,33 @@ pub type RxQueueReceiver<'res> = DynamicReceiver<'res, ReceivedFrame<'res>>;
 
 /// The resources required by the WiFi stack.
 pub struct FoAResources {
+    /// Resources for the Wi-Fi driver.
     wifi_resources: WiFiResources<RX_BUFFER_COUNT>,
-    #[cfg(feature = "arc_buffers")]
-    arc_pool: RxArcPool,
-    tx_buffers: [[u8; TX_BUFFER_SIZE]; TX_BUFFER_COUNT],
-    tx_buffer_manager: Option<TxBufferManager<TX_BUFFER_COUNT>>,
+    /// State for the LMAC.
     shared_lmac_state: Option<SharedLMacState>,
-    rx_queues: [Channel<NoopRawMutex, ReceivedFrame<'static>, RX_QUEUE_LEN>; WiFi::INTERFACE_COUNT],
+
+    // RX
+    /// RX Queues for all interfaces.
+    ///
+    /// The [AtomicBool] indicates, whether this queue is active.
+    rx_queues: [(
+        Channel<NoopRawMutex, ReceivedFrame<'static>, RX_QUEUE_LEN>,
+        AtomicBool,
+    ); INTERFACE_COUNT],
+    #[cfg(feature = "arc_buffers")]
+    /// Atomically reference counted buffer pool.
+    arc_pool: RxArcPool,
+
+    // TX
+    /// All EDCA TX queues.
+    edca_tx_queues: Option<[TxQueue; 4]>,
+    /// Beacon TX is handled differently, since it's essentially always bound to stricter timing
+    /// requirements.
+    beacon_tx_queue: Option<Mutex<NoopRawMutex, TxQueueEndpoint<'static>>>,
+    /// TX buffers used by the [TxBufferManager].
+    tx_buffers: [[u8; TX_BUFFER_SIZE]; TX_BUFFER_COUNT],
+    /// The aforementioned TX buffer manager.
+    tx_buffer_manager: Option<TxBufferManager<TX_BUFFER_COUNT>>,
 }
 impl FoAResources {
     /// Create new stack resources.
@@ -99,10 +127,13 @@ impl FoAResources {
             wifi_resources: WiFiResources::new(),
             #[cfg(feature = "arc_buffers")]
             arc_pool: RxArcPool::new(),
+            rx_queues: [const { (Channel::new(), AtomicBool::new(true)) }; INTERFACE_COUNT],
+            shared_lmac_state: None,
+
+            edca_tx_queues: None,
+            beacon_tx_queue: None,
             tx_buffers: [[0u8; TX_BUFFER_SIZE]; TX_BUFFER_COUNT],
             tx_buffer_manager: None,
-            shared_lmac_state: None,
-            rx_queues: [const { Channel::new() }; WiFi::INTERFACE_COUNT],
         }
     }
 }
@@ -111,6 +142,7 @@ impl Default for FoAResources {
         Self::new()
     }
 }
+
 /// A virtual interface (VIF).
 ///
 /// This is intended to be used by interface implementations, which should take in a mutable
@@ -118,6 +150,7 @@ impl Default for FoAResources {
 pub struct VirtualInterface<'res> {
     interface_control: LMacInterfaceControl<'res>,
     rx_queue_receiver: RxQueueReceiver<'res>,
+    tx_endpoint: TxEndpoint<'res>,
 }
 impl<'res> VirtualInterface<'res> {
     /// Split the virtual interface into it's components.
@@ -129,8 +162,13 @@ impl<'res> VirtualInterface<'res> {
     ) -> (
         &'a mut LMacInterfaceControl<'res>,
         &'a mut RxQueueReceiver<'res>,
+        &'a mut TxEndpoint<'res>,
     ) {
-        (&mut self.interface_control, &mut self.rx_queue_receiver)
+        (
+            &mut self.interface_control,
+            &mut self.rx_queue_receiver,
+            &mut self.tx_endpoint,
+        )
     }
     /// Reset the virtual interface.
     ///
@@ -143,65 +181,89 @@ impl<'res> VirtualInterface<'res> {
         self.interface_control.unlock_channel();
         self.interface_control
             .set_scanning_mode(ScanningMode::Disabled);
+        self.interface_control.clear_filter(RxFilterBank::Bssid);
         self.interface_control
-            .set_filter_status(RxFilterBank::BSSID, false);
-        self.interface_control
-            .set_filter_status(RxFilterBank::ReceiverAddress, false);
+            .clear_filter(RxFilterBank::ReceiverAddress);
     }
 }
 
 /// Initialise FoA.
 pub fn init<'res>(
     resources: &'res mut FoAResources,
-    wifi: WIFI,
-    adc2: ADC2,
-) -> (
-    [VirtualInterface<'res>; WiFi::INTERFACE_COUNT],
-    FoARunner<'res>,
-) {
+    wifi: WIFI<'res>,
+) -> ([VirtualInterface<'res>; INTERFACE_COUNT], FoARunner<'res>) {
+    let wifi = WiFi::new(wifi, &mut resources.wifi_resources);
+
+    let SplitDriverComponents {
+        rx_interface_controllers,
+        rx_endpoint,
+        channel_controller,
+        crypto_controller,
+        tx_queue_endpoints: [beacon_tx_endpoint, edca_tx_endpoints @ ..],
+    } = wifi.split();
+
     // This is for all transmutes here.
     // # SAFETY:
     // We do this only to avoid self referential structs. All of the destination lifetimes are the
     // lifetime of the resources struct and therefore valid.
-    let wifi = WiFi::new(wifi, adc2, &mut resources.wifi_resources);
-    unsafe extern "C" {
-        fn phy_set_most_tpw(power: u8);
-    }
 
-    unsafe {
-        phy_set_most_tpw(84);
-    }
-
+    // Initialize global state
     let shared_lmac_state = resources
         .shared_lmac_state
-        .insert(SharedLMacState::new(wifi));
+        .insert(SharedLMacState::new(channel_controller, crypto_controller));
     let tx_buffer_manager = resources
         .tx_buffer_manager
         .insert(unsafe { TxBufferManager::new(&mut resources.tx_buffers) });
-    let (lmac_receive_endpoint, lmac_interface_controls) =
-        shared_lmac_state.split(tx_buffer_manager.dyn_tx_buffer_manager());
-    let rx_queue_senders =
-        array::from_fn(|i| unsafe { mem::transmute(resources.rx_queues[i].dyn_sender()) });
-    let virtual_interfaces =
+    let lmac_interface_controls = shared_lmac_state.split(rx_interface_controllers);
+    let rx_queue_senders = array::from_fn(|i| {
+        (
+            unsafe { mem::transmute(resources.rx_queues[i].0.dyn_sender()) },
+            &resources.rx_queues[i].1,
+        )
+    });
+    // TX queue setup
+    let beacon_tx_queue = resources.beacon_tx_queue.insert(Mutex::new(unsafe {
+        core::mem::transmute(beacon_tx_endpoint)
+    }));
+    let edca_tx_queues = resources
+        .edca_tx_queues
+        .insert([const { TxQueue::new() }; 4]);
+    let edca_tx_queues = unsafe {
+        core::mem::transmute::<&mut [TxQueue; 4], &'res mut [TxQueue; 4]>(edca_tx_queues)
+    };
+
+    let virtual_interfaces = unsafe {
         lmac_interface_controls.map(|lmac_interface_control| VirtualInterface {
-            rx_queue_receiver: unsafe {
-                mem::transmute::<
-                    DynamicReceiver<'_, ReceivedFrame<'static>>,
-                    DynamicReceiver<'_, ReceivedFrame<'_>>,
-                >(
-                    resources.rx_queues[lmac_interface_control.get_filter_interface()]
-                        .dyn_receiver(),
-                )
-            },
+            rx_queue_receiver: mem::transmute(
+                resources.rx_queues[lmac_interface_control.interface()]
+                    .0
+                    .dyn_receiver(),
+            ),
+            tx_endpoint: mem::transmute(TxEndpoint {
+                beacon_tx_endpoint: &beacon_tx_queue,
+                dyn_tx_buffer_manager: tx_buffer_manager.dyn_tx_buffer_manager(),
+                edca_tx_endpoints: edca_tx_queues.each_ref(),
+                interface: lmac_interface_control.interface(),
+            }),
             interface_control: lmac_interface_control,
-        });
+        })
+    };
+
     (
         virtual_interfaces,
         FoARunner {
-            lmac_receive_endpoint,
-            rx_queue_senders,
-            #[cfg(feature = "arc_buffers")]
-            rx_arc_pool: &resources.arc_pool,
+            tx_runner: TxRunner {
+                edca_tx_runners: edca_tx_endpoints.map(|tx_endpoint| TxQueueRunner {
+                    tx_queue: &edca_tx_queues[tx_endpoint.hardware_tx_queue().hardware_slot() - 1],
+                    tx_endpoint,
+                }),
+            },
+            rx_runner: RxRunner {
+                rx_endpoint,
+                rx_queue_senders,
+                #[cfg(feature = "arc_buffers")]
+                rx_arc_pool: &resources.arc_pool,
+            },
         },
     )
 }

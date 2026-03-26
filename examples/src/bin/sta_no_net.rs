@@ -23,34 +23,30 @@ macro_rules! mk_static {
 const SSID: &str = env!("SSID");
 
 #[embassy_executor::task]
-async fn foa_task(mut foa_runner: FoARunner<'static>) -> ! {
+async fn foa_task(mut foa_runner: FoARunner<'static>) {
     foa_runner.run().await
 }
 #[embassy_executor::task]
 async fn sta_task(mut sta_runner: StaRunner<'static, 'static>) -> ! {
     sta_runner.run().await
 }
-#[esp_hal_embassy::main]
+#[esp_rtos::main]
 async fn main(spawner: Spawner) {
     esp_bootloader_esp_idf::esp_app_desc!();
     let peripherals = esp_hal::init(esp_hal::Config::default());
 
-    let timg0 = TimerGroup::new(peripherals.TIMG0);
-    esp_hal_embassy::init(timg0.timer0);
+    let timg0: TimerGroup<'_, esp_hal::peripherals::TIMG0<'_>> = TimerGroup::new(peripherals.TIMG0);
+    esp_rtos::start(timg0.timer0);
 
     let stack_resources = mk_static!(FoAResources, FoAResources::new());
-    let ([sta_vif, ..], foa_runner) = foa::init(
-        stack_resources,
-        peripherals.WIFI,
-        peripherals.ADC2,
-    );
+    let ([sta_vif, ..], foa_runner) = foa::init(stack_resources, peripherals.WIFI);
     spawner.spawn(foa_task(foa_runner)).unwrap();
 
     let sta_resources = mk_static!(StaResources<'static>, StaResources::default());
     let (mut sta_control, sta_runner, _net_device) = foa_sta::new_sta_interface(
         mk_static!(VirtualInterface<'static>, sta_vif),
         sta_resources,
-        Rng::new(peripherals.RNG),
+        Rng::new(),
     );
     spawner.spawn(sta_task(sta_runner)).unwrap();
 

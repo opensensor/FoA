@@ -43,7 +43,7 @@ use core::net::Ipv6Addr;
 use embassy_net_driver_channel::driver::HardwareAddress;
 use embassy_sync::channel::DynamicReceiver;
 use esp_config::esp_config_int;
-use foa::{esp_wifi_hal::RxFilterBank, VirtualInterface};
+use foa::{esp_wifi_hal::prelude::RxFilterBank, VirtualInterface};
 use rand_core::RngCore;
 
 mod control;
@@ -92,10 +92,9 @@ pub fn new_awdl_interface<'foa, 'vif, Rng: RngCore + Clone>(
     AwdlEventQueueReceiver<'vif>,
 ) {
     virtual_interface.reset();
-    let (interface_control, rx_queue) = virtual_interface.split();
+    let (interface_control, rx_queue, tx_endpoint) = virtual_interface.split();
 
-    interface_control.set_filter_parameters(RxFilterBank::BSSID, AWDL_BSSID, None);
-    interface_control.set_filter_status(RxFilterBank::BSSID, true);
+    interface_control.set_filter(RxFilterBank::Bssid, AWDL_BSSID);
 
     let (net_runner, net_device) = embassy_net_driver_channel::new(
         &mut resources.net_state,
@@ -113,6 +112,7 @@ pub fn new_awdl_interface<'foa, 'vif, Rng: RngCore + Clone>(
         AwdlRunner::new(
             interface_control,
             rx_queue,
+            tx_endpoint,
             &resources.common_resources,
             net_runner,
         ),

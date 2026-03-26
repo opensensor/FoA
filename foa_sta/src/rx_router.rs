@@ -4,9 +4,9 @@ use foa::util::rx_router::{
     RxRouterScopedOperation,
 };
 use ieee80211::{
+    GenericFrame,
     common::{FrameType, ManagementFrameSubtype},
     mac_parser::MACAddress,
-    GenericFrame,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

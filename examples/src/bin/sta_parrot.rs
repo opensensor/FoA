@@ -3,24 +3,24 @@
 
 use defmt::info;
 use embassy_executor::Spawner;
+use embassy_futures::join::join;
 use embassy_net::{
+    DhcpConfig, Runner as NetRunner, StackResources as NetStackResources,
     dns::DnsSocket,
     tcp::client::{TcpClient, TcpClientState},
-    DhcpConfig, Runner as NetRunner, StackResources as NetStackResources,
 };
-use embassy_time::Timer;
+use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embedded_io_async::Read;
 use esp_backtrace as _;
 use esp_hal::{
+    Async,
+    clock::CpuClock,
     rng::Rng,
     timer::timg::TimerGroup,
     uart::{self, Uart},
-    Async,
 };
 use esp_println as _;
-use foa::{
-    FoAResources, FoARunner, VirtualInterface,
-};
+use foa::{FoAResources, FoARunner, VirtualInterface};
 use foa_sta::{Credentials, StaNetDevice, StaResources, StaRunner};
 use reqwless::{client::HttpClient, request::Method, response::BodyReader};
 
@@ -36,7 +36,7 @@ macro_rules! mk_static {
 }
 
 #[embassy_executor::task]
-async fn foa_task(mut foa_runner: FoARunner<'static>) -> ! {
+async fn foa_task(mut foa_runner: FoARunner<'static>) {
     foa_runner.run().await
 }
 #[embassy_executor::task]
@@ -50,17 +50,13 @@ async fn net_task(mut net_runner: NetRunner<'static, StaNetDevice<'static>>) -> 
 #[esp_rtos::main]
 async fn main(spawner: Spawner) {
     esp_bootloader_esp_idf::esp_app_desc!();
-    let peripherals = esp_hal::init(esp_hal::Config::default());
+    let peripherals = esp_hal::init(esp_hal::Config::default().with_cpu_clock(CpuClock::max()));
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     esp_rtos::start(timg0.timer0);
 
     let stack_resources = mk_static!(FoAResources, FoAResources::new());
-    let ([sta_vif, ..], foa_runner) = foa::init(
-        stack_resources,
-        peripherals.WIFI,
-        peripherals.ADC2,
-    );
+    let ([sta_vif, ..], foa_runner) = foa::init(stack_resources, peripherals.WIFI);
     spawner.spawn(foa_task(foa_runner)).unwrap();
 
     let sta_resources = mk_static!(StaResources<'static>, StaResources::default());
@@ -102,8 +98,6 @@ async fn main(spawner: Spawner) {
     let mut http_client = HttpClient::new(&tcp_client, &dns_client);
 
     let rx_buf = mk_static!([u8; 8192], [0; 8192]);
-
-    let parrot_buffer = mk_static!([u8; 1119], [0u8; 1119]);
     #[cfg(feature = "esp32")]
     let (rx_pin, tx_pin) = (peripherals.GPIO3, peripherals.GPIO1);
     #[cfg(feature = "esp32s2")]
@@ -114,6 +108,9 @@ async fn main(spawner: Spawner) {
         .with_tx(tx_pin)
         .into_async();
     defmt::flush();
+
+    let queue_buffers = mk_static!([([u8; 1500], usize); 8], [([0u8; 1500], 0); 8]);
+
     loop {
         let mut request = http_client
             .request(Method::GET, "http://parrot.live/")
@@ -124,16 +121,34 @@ async fn main(spawner: Spawner) {
             panic!()
         };
 
-        loop {
-            let Ok(_) = chunked_reader.read_exact(parrot_buffer).await else {
-                break;
-            };
-            let _ = <Uart<'static, Async> as embedded_io_async::Write>::write_all(
-                &mut uart,
-                parrot_buffer,
-            )
-            .await;
-            let _ = uart.flush();
-        }
+        let mut queue =
+            embassy_sync::zerocopy_channel::Channel::<'_, NoopRawMutex, _>::new(queue_buffers);
+        let (mut queue_sender, mut queue_receiver) = queue.split();
+        join(
+            async move {
+                loop {
+                    let (parrot_buffer, length) = queue_sender.send().await;
+                    let Ok(read) = chunked_reader.read(&mut parrot_buffer[..1119]).await else {
+                        break;
+                    };
+                    *length = read;
+                    queue_sender.send_done();
+                }
+            },
+            async move {
+                loop {
+                    let (parrot_buffer, length) = queue_receiver.receive().await;
+                    let _ = <Uart<'static, Async> as embedded_io_async::Write>::write_all(
+                        &mut uart,
+                        &parrot_buffer[..*length],
+                    )
+                    .await;
+                    let _ = uart.flush_async().await;
+                    queue_receiver.receive_done();
+                }
+            },
+        )
+        .await;
+        loop {}
     }
 }

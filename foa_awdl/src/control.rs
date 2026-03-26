@@ -1,7 +1,7 @@
 use core::net::Ipv6Addr;
 
 use embassy_time::Duration;
-use foa::{esp_wifi_hal::RxFilterBank, LMacInterfaceControl};
+use foa::{esp_wifi_hal::prelude::RxFilterBank, LMacInterfaceControl};
 use rand_core::RngCore;
 
 use crate::{
@@ -24,23 +24,15 @@ impl<Rng: RngCore> AwdlControl<'_, '_, Rng> {
     /// Set and enable all filters required for the interface.
     fn enable_filters(&self) {
         self.interface_control
-            .set_filter_parameters(RxFilterBank::BSSID, AWDL_BSSID, None);
+            .set_filter(RxFilterBank::Bssid, AWDL_BSSID);
         self.interface_control
-            .set_filter_status(RxFilterBank::BSSID, true);
-        self.interface_control.set_filter_parameters(
-            RxFilterBank::ReceiverAddress,
-            self.mac_address,
-            None,
-        );
-        self.interface_control
-            .set_filter_status(RxFilterBank::ReceiverAddress, true);
+            .set_filter(RxFilterBank::ReceiverAddress, self.mac_address);
     }
     /// Disable all filter for the interface.
     fn disable_filters(&self) {
+        self.interface_control.clear_filter(RxFilterBank::Bssid);
         self.interface_control
-            .set_filter_status(RxFilterBank::BSSID, false);
-        self.interface_control
-            .set_filter_status(RxFilterBank::ReceiverAddress, false);
+            .clear_filter(RxFilterBank::ReceiverAddress);
     }
     /// Start an AWDL session.
     ///

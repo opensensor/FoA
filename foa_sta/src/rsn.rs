@@ -1,15 +1,15 @@
 use core::sync::atomic::Ordering;
 
 use foa::{
-    esp_wifi_hal::{AesCipherParameters, CipherParameters, KeyType, MultiLengthKey},
     KeySlot,
+    esp_wifi_hal::prelude::{AesCipherParameters, CipherParameters, KeyType, MultiLengthKey},
 };
 use ieee80211::{
     crypto::{map_passphrase_to_psk, partition_ptk},
     elements::rsn::{
         IEEE80211AkmType, IEEE80211CipherSuiteSelector, OptionalFeatureConfig, RsnElement,
     },
-    mgmt_frame::{body::BeaconLikeBody, ManagementFrame},
+    mgmt_frame::{ManagementFrame, body::BeaconLikeBody},
 };
 use portable_atomic::AtomicU64;
 
@@ -84,7 +84,9 @@ pub enum SecurityConfig {
     Invalid,
 }
 impl SecurityConfig {
-    pub(crate) fn from_beacon_like<Subtype>(frame: &ManagementFrame<BeaconLikeBody<'_, Subtype>>) -> Self {
+    pub(crate) fn from_beacon_like<Subtype>(
+        frame: &ManagementFrame<BeaconLikeBody<'_, Subtype>>,
+    ) -> Self {
         let Some(rsn) = frame.elements.get_first_element::<RsnElement>() else {
             return Self::Open;
         };

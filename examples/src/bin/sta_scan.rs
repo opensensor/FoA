@@ -27,20 +27,16 @@ async fn main(_spawner: Spawner) {
     let peripherals = esp_hal::init(esp_hal::Config::default());
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
-    esp_hal_embassy::init(timg0.timer0);
+    esp_rtos::start(timg0.timer0);
 
     let stack_resources = mk_static!(FoAResources, FoAResources::new());
-    let ([mut sta_vif, ..], mut foa_runner) = foa::init(
-        stack_resources,
-        peripherals.WIFI,
-        peripherals.ADC2,
-    );
+    let ([mut sta_vif, ..], mut foa_runner) = foa::init(stack_resources, peripherals.WIFI);
     let sta_resources = mk_static!(StaResources, StaResources::default());
     let (mut sta_control, mut sta_runner, _net_device) =
-        foa_sta::new_sta_interface(&mut sta_vif, sta_resources, Rng::new(peripherals.RNG));
+        foa_sta::new_sta_interface(&mut sta_vif, sta_resources, Rng::new());
     info!("Starting scan.");
     join3(foa_runner.run(), sta_runner.run(), async {
-        let mut found_bss = heapless::FnvIndexMap::new();
+        let mut found_bss = heapless::index_map::FnvIndexMap::new();
         let _ = sta_control.scan::<32>(None, &mut found_bss).await;
         for (_, bss) in found_bss {
             info!(

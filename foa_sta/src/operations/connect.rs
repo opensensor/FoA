@@ -3,8 +3,11 @@ use core::{array, marker::PhantomData, mem};
 use embassy_futures::join::join;
 use embassy_time::WithTimeout;
 use foa::{
-    esp_wifi_hal::{RxFilterBank, TxErrorBehaviour, TxParameters, WiFiRate},
-    LMacInterfaceControl, ReceivedFrame,
+    ReceivedFrame, RetryBehaviour, TxBuffer, TxReturnData,
+    esp_wifi_hal::{
+        ll::EdcaAccessCategory,
+        prelude::{RxFilterBank, TxMacParameters, TxPlcpParameters},
+    },
 };
 use ieee80211::{
     common::{
@@ -12,37 +15,40 @@ use ieee80211::{
         IEEE80211AuthenticationAlgorithmNumber, IEEE80211StatusCode, SequenceControl,
     },
     crypto::{
-        derive_ptk, deserialize_eapol_data_frame,
+        EapolSerdeError, derive_ptk, deserialize_eapol_data_frame,
         eapol::{EapolKeyFrame, KeyDescriptorVersion, KeyInformation},
-        partition_ptk, serialize_eapol_data_frame, EapolSerdeError,
+        partition_ptk, serialize_eapol_data_frame,
     },
-    data_frame::{header::DataFrameHeader, DataFrame},
+    data_frame::{DataFrame, header::DataFrameHeader},
     element_chain,
     elements::{
+        SSIDElement,
         kde::GtkKde,
         rsn::{IEEE80211CipherSuiteSelector, RsnElement},
-        SSIDElement,
     },
     mac_parser::MACAddress,
     mgmt_frame::{
-        body::{AssociationRequestBody, AuthenticationBody},
         AssociationRequestFrame, AssociationResponseFrame, AuthenticationFrame,
         ManagementFrameHeader,
+        body::{AssociationRequestBody, AuthenticationBody},
     },
-    scroll::{self, ctx::TryIntoCtx, Pread, Pwrite},
+    scroll::{self, Pread, Pwrite, ctx::TryIntoCtx},
 };
 use llc_rs::{EtherType, SnapLlcFrame};
 use rand_core::RngCore;
 
 use crate::{
-    operations::{scan::BSS, DEFAULT_SUPPORTED_RATES, DEFAULT_XRATES}, rsn::{
-        Credentials, SecurityAssociations, TransientKeySecurityAssociation, GTK_LENGTH, PMK_LENGTH,
-        PTK_LENGTH, WPA2_PSK_AKM,
-    }, rx_router::{StaRxRouterEndpoint, StaRxRouterOperation, StaRxRouterScopedOperation}, util::HexWrapper, ConnectionConfig, CryptoState, SecurityConfig, StaError, StaTxRx
+    ConnectionConfig, CryptoState, SecurityConfig, StaError, StaTxRx,
+    operations::{DEFAULT_SUPPORTED_RATES, DEFAULT_XRATES, scan::BSS},
+    rsn::{
+        Credentials, GTK_LENGTH, PMK_LENGTH, PTK_LENGTH, SecurityAssociations,
+        TransientKeySecurityAssociation, WPA2_PSK_AKM,
+    },
+    rx_router::{StaRxRouterEndpoint, StaRxRouterOperation, StaRxRouterScopedOperation},
+    util::HexWrapper,
 };
 
 pub struct ConnectionParameters<'a> {
-    pub phy_rate: WiFiRate,
     pub config: ConnectionConfig,
     pub own_address: MACAddress,
     pub credentials: Option<Credentials<'a>>,
@@ -57,7 +63,6 @@ pub(crate) async fn send_eapol_key_frame<
     sta_tx_rx: &StaTxRx<'_, '_>,
     bssid: MACAddress,
     own_address: MACAddress,
-    tx_buffer: &mut [u8],
     payload: EapolKeyFrame<'a, KeyMic, ElementContainer>,
     kck: Option<&[u8; 16]>,
     kek: Option<&[u8; 16]>,
@@ -80,25 +85,30 @@ pub(crate) async fn send_eapol_key_frame<
         }),
         _phantom: PhantomData,
     };
+    let mut tx_buffer = sta_tx_rx.tx_endpoint.alloc_tx_buf().await;
     let (buffer, temp_buffer) = tx_buffer.split_at_mut(500);
     let written = serialize_eapol_data_frame(kck, kek, data_frame, buffer, temp_buffer).unwrap();
-    sta_tx_rx
-        .interface_control
-        .transmit(
-            &mut buffer[..written],
-            &TxParameters {
-                override_seq_num: true,
-                tx_error_behaviour: TxErrorBehaviour::RetryUntil(7),
+    let res = sta_tx_rx
+        .tx_endpoint
+        .transmit_edca(
+            EdcaAccessCategory::default(),
+            tx_buffer,
+            written,
+            TxPlcpParameters {
+                rate: sta_tx_rx.phy_rate(),
                 ..Default::default()
             },
-            true,
+            TxMacParameters::default(),
+            RetryBehaviour::RetryUntil(7),
         )
-        .await
-        .map_err(|_| {
-            debug!("4WHS step timeout.");
-            StaError::AckTimeout
-        })?;
-    Ok(())
+        .wait_for_completion()
+        .await;
+    if matches!(res, Some(TxReturnData { result: Err(_), .. })) {
+        debug!("4WHS step timeout.");
+        Err(StaError::AckTimeout)
+    } else {
+        Ok(())
+    }
 }
 /// Connecting to an AP.
 struct ConnectionOperation<'foa, 'vif, 'params> {
@@ -118,24 +128,31 @@ impl<'foa, 'vif, 'params> ConnectionOperation<'foa, 'vif, 'params> {
     async fn do_bidirectional_connection_step(
         &self,
         router_operation: &StaRxRouterScopedOperation<'foa, 'vif, 'params>,
-        tx_frame: &mut [u8],
+        mut frame: TxBuffer<'foa>,
+        frame_length: usize,
     ) -> Result<ReceivedFrame<'_>, StaError> {
         for _ in 0..=self.connection_parameters.config.handshake_retries {
-            let res = self
+            let Some(res) = self
                 .sta_tx_rx
-                .interface_control
-                .transmit(
-                    tx_frame,
-                    &TxParameters {
-                        rate: self.connection_parameters.phy_rate,
-                        ..LMacInterfaceControl::DEFAULT_TX_PARAMETERS
+                .tx_endpoint
+                .transmit_edca(
+                    EdcaAccessCategory::default(),
+                    frame,
+                    frame_length,
+                    TxPlcpParameters {
+                        rate: self.sta_tx_rx.phy_rate(),
+                        ..Default::default()
                     },
-                    true,
+                    TxMacParameters::default(),
+                    foa::RetryBehaviour::RetryUntil(7),
                 )
-                .await;
-            if res.is_err() {
-                continue;
-            }
+                .wait_for_completion()
+                .await
+            else {
+                warn!("Somehow the queue overran this shouldn't be possible.");
+                break;
+            };
+            frame = res.frame;
             // Due to the user operation being set to authenticating, we'll only receive authentication
             // frames.
             if let Ok(frame) = router_operation
@@ -177,11 +194,11 @@ impl<'foa, 'vif, 'params> ConnectionOperation<'foa, 'vif, 'params> {
             },
         };
         // Allocate a TX buffer and serialize the frame.
-        let mut tx_buffer = self.sta_tx_rx.interface_control.alloc_tx_buf().await;
+        let mut tx_buffer = self.sta_tx_rx.tx_endpoint.alloc_tx_buf().await;
         let written = tx_buffer.pwrite(auth_frame, 0).unwrap();
         // Transmit an authentication frame and wait for the response.
         let response = self
-            .do_bidirectional_connection_step(router_operation, &mut tx_buffer[..written])
+            .do_bidirectional_connection_step(router_operation, tx_buffer, written)
             .await?;
         // Try to parse the frame or return an error.
         let Ok(auth_frame) = response.mpdu_buffer().pread::<AuthenticationFrame>(0) else {
@@ -219,7 +236,7 @@ impl<'foa, 'vif, 'params> ConnectionOperation<'foa, 'vif, 'params> {
             .expect("This should not fail, since all three connecting operations have the same compatibility and there is no await point in the transition.");
 
         let rsn_active = bss.security_config != SecurityConfig::Open;
-        let mut tx_buffer = self.sta_tx_rx.interface_control.alloc_tx_buf().await;
+        let mut tx_buffer = self.sta_tx_rx.tx_endpoint.alloc_tx_buf().await;
         let mut assoc_request_frame = AssociationRequestFrame {
             header: ManagementFrameHeader {
                 receiver_address: bss.bssid,
@@ -254,7 +271,7 @@ impl<'foa, 'vif, 'params> ConnectionOperation<'foa, 'vif, 'params> {
         let written = assoc_request_frame.finish(false).unwrap();
         // Transmit an association request and wait for the association response.
         let response = self
-            .do_bidirectional_connection_step(router_operation, &mut tx_buffer[..written])
+            .do_bidirectional_connection_step(router_operation, tx_buffer, written)
             .await?;
         // Try to parse the response or return an error.
         let Ok(assoc_response) = response.mpdu_buffer().pread::<AssociationResponseFrame>(0) else {
@@ -322,19 +339,17 @@ impl<'foa, 'vif, 'params> ConnectionOperation<'foa, 'vif, 'params> {
             break eapol_key_frame.key_nonce;
         }
     }
-    async fn send_message_2(
+    fn send_message_2(
         &self,
         bss: &'params BSS,
-        tx_buffer: &mut [u8],
         kck: &[u8; 16],
         supplicant_nonce: &[u8; 32],
         key_replay_counter: u64,
-    ) -> Result<(), StaError> {
+    ) -> impl Future<Output = Result<(), StaError>> {
         send_eapol_key_frame(
             self.sta_tx_rx,
             bss.bssid,
             self.connection_parameters.own_address,
-            tx_buffer,
             EapolKeyFrame {
                 key_information: KeyInformation::new()
                     .with_is_pairwise(true)
@@ -352,11 +367,10 @@ impl<'foa, 'vif, 'params> ConnectionOperation<'foa, 'vif, 'params> {
             Some(kck),
             None,
         )
-        .await
     }
     async fn process_message_3(
         router_operation: &StaRxRouterScopedOperation<'foa, 'vif, 'params>,
-        shared_buffer: &mut [u8],
+        mut scratch_buffer: TxBuffer<'_>,
         kck: &[u8; 16],
         kek: &[u8; 16],
         key_replay_counter: &mut u64,
@@ -367,7 +381,7 @@ impl<'foa, 'vif, 'params> ConnectionOperation<'foa, 'vif, 'params> {
                 Some(kck),
                 Some(kek),
                 frame.mpdu_buffer_mut(),
-                shared_buffer,
+                scratch_buffer.as_mut_slice(),
                 WPA2_PSK_AKM,
                 false,
             ) {
@@ -377,7 +391,10 @@ impl<'foa, 'vif, 'params> ConnectionOperation<'foa, 'vif, 'params> {
                     continue;
                 }
                 Err(_) => {
-                    debug!("Another error occured. Frame: {}", HexWrapper(frame.mpdu_buffer()));
+                    debug!(
+                        "Another error occured. Frame: {}",
+                        HexWrapper(frame.mpdu_buffer())
+                    );
                     continue;
                 }
             };
@@ -407,19 +424,17 @@ impl<'foa, 'vif, 'params> ConnectionOperation<'foa, 'vif, 'params> {
             );
         }
     }
-    async fn send_message_4(
+    fn send_message_4(
         &self,
         bss: &'params BSS,
-        tx_buffer: &mut [u8],
         kck: &[u8; 16],
         supplicant_nonce: &[u8; 32],
         key_replay_counter: u64,
-    ) -> Result<(), StaError> {
+    ) -> impl Future<Output = Result<(), StaError>> {
         send_eapol_key_frame(
             self.sta_tx_rx,
             bss.bssid,
             self.connection_parameters.own_address,
-            tx_buffer,
             EapolKeyFrame {
                 key_information: KeyInformation::new()
                     .with_is_pairwise(true)
@@ -436,7 +451,6 @@ impl<'foa, 'vif, 'params> ConnectionOperation<'foa, 'vif, 'params> {
             Some(kck),
             None,
         )
-        .await
     }
     async fn do_4whs(
         &self,
@@ -455,7 +469,8 @@ impl<'foa, 'vif, 'params> ConnectionOperation<'foa, 'vif, 'params> {
         rng.fill_bytes(&mut supplicant_nonce);
         debug!(
             "Starting 4WHS. PMK: {}; SNonce: {}",
-            HexWrapper(&pmk), HexWrapper(&supplicant_nonce)
+            HexWrapper(&pmk),
+            HexWrapper(&supplicant_nonce)
         );
         let mut key_replay_counter = 0;
 
@@ -484,25 +499,20 @@ impl<'foa, 'vif, 'params> ConnectionOperation<'foa, 'vif, 'params> {
         let (kck, kek): ([u8; 16], [u8; 16]) = (kck.try_into().unwrap(), kek.try_into().unwrap());
         debug!(
             "Derived PTK. KCK: {} KEK: {}, TK: {}",
-            HexWrapper(&kck), HexWrapper(&kek), HexWrapper(tk)
+            HexWrapper(&kck),
+            HexWrapper(&kek),
+            HexWrapper(tk)
         );
-        //
-        // We use a TX buffer as a general use buffer here.
-        let mut shared_buffer = self.sta_tx_rx.interface_control.alloc_tx_buf().await;
-
-        self.send_message_2(
-            bss,
-            shared_buffer.as_mut_slice(),
-            &kck,
-            &supplicant_nonce,
-            key_replay_counter,
-        )
-        .await?;
+        self.send_message_2(bss, &kck, &supplicant_nonce, key_replay_counter)
+            .await?;
         debug!("Sent 4WHS message 2.");
+
+        // We abuse a TX buffer as a general purpose buffer here.
+        let scratch_buffer = self.sta_tx_rx.tx_endpoint.alloc_tx_buf().await;
 
         let gtk = Self::process_message_3(
             router_operation,
-            shared_buffer.as_mut_slice(),
+            scratch_buffer,
             &kck,
             &kek,
             &mut key_replay_counter,
@@ -510,17 +520,12 @@ impl<'foa, 'vif, 'params> ConnectionOperation<'foa, 'vif, 'params> {
         .await;
         debug!(
             "Processed 4WHS message 3. GTK: {} GTK Key ID: {}",
-            HexWrapper(&gtk.key), gtk.key_id
+            HexWrapper(&gtk.key),
+            gtk.key_id
         );
 
-        self.send_message_4(
-            bss,
-            shared_buffer.as_mut_slice(),
-            &kck,
-            &supplicant_nonce,
-            key_replay_counter,
-        )
-        .await?;
+        self.send_message_4(bss, &kck, &supplicant_nonce, key_replay_counter)
+            .await?;
         debug!("Sent 4WHS message 4.");
 
         Ok(SecurityAssociations {
@@ -533,22 +538,13 @@ impl<'foa, 'vif, 'params> ConnectionOperation<'foa, 'vif, 'params> {
     fn configure_rx_filters(&self, bss: &BSS) {
         // Here we set and enable the BSSID and RA filters.
 
-        self.sta_tx_rx.interface_control.set_filter_parameters(
+        self.sta_tx_rx.interface_control.set_filter(
             RxFilterBank::ReceiverAddress,
             *self.connection_parameters.own_address,
-            None,
         );
         self.sta_tx_rx
             .interface_control
-            .set_filter_status(RxFilterBank::ReceiverAddress, true);
-        self.sta_tx_rx.interface_control.set_filter_parameters(
-            RxFilterBank::BSSID,
-            *bss.bssid,
-            None,
-        );
-        self.sta_tx_rx
-            .interface_control
-            .set_filter_status(RxFilterBank::BSSID, true);
+            .set_filter(RxFilterBank::Bssid, *bss.bssid);
     }
     async fn run(
         self,
@@ -640,23 +636,22 @@ impl Drop for ConnectionOperation<'_, '_, '_> {
     fn drop(&mut self) {
         self.sta_tx_rx
             .interface_control
-            .set_filter_status(RxFilterBank::ReceiverAddress, false);
+            .clear_filter(RxFilterBank::ReceiverAddress);
         self.sta_tx_rx
             .interface_control
-            .set_filter_status(RxFilterBank::BSSID, false);
+            .clear_filter(RxFilterBank::Bssid);
     }
 }
-pub async fn connect<'foa, 'vif, 'params>(
+pub fn connect<'foa, 'vif, 'params>(
     sta_tx_rx: &'params StaTxRx<'foa, 'vif>,
     rx_router_endpoint: &'params mut StaRxRouterEndpoint<'foa, 'vif>,
     bss: &'params BSS,
     connection_parameters: &'params ConnectionParameters<'params>,
     rng: impl RngCore,
-) -> Result<AssociationID, StaError> {
+) -> impl Future<Output = Result<AssociationID, StaError>> {
     ConnectionOperation {
         sta_tx_rx,
         connection_parameters,
     }
     .run(rx_router_endpoint, bss, rng)
-    .await
 }

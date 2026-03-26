@@ -34,6 +34,7 @@ rand_core = "0.9.3"
 portable-atomic = "1.11.1"
 ieee80211 = "0.5.7"
 log = { version = "0.4.28", optional = true }
+futures-util = { version = "0.3.32", default-features = false }
 
 [build-dependencies]
 esp-config = { version = "0.4.0", features = ["build"] }

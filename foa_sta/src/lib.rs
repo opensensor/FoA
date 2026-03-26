@@ -41,8 +41,8 @@ use ieee80211::{common::IEEE80211StatusCode, mac_parser::MACAddress};
 
 use embassy_net_driver_channel::{self as ch};
 use foa::{
-    esp_wifi_hal::WiFiRate, util::rx_router::RxRouter, LMacError, LMacInterfaceControl,
-    VirtualInterface,
+    LMacError, LMacInterfaceControl, TxEndpoint, VirtualInterface, esp_wifi_hal::prelude::WiFiRate,
+    util::rx_router::RxRouter,
 };
 
 #[macro_use]
@@ -113,13 +113,14 @@ pub const MTU: usize = 1514;
 pub(crate) struct StaTxRx<'foa, 'vif> {
     pub(crate) interface_control: &'vif LMacInterfaceControl<'foa>,
     pub(crate) connection_state: &'vif ConnectionStateTracker,
+    pub(crate) tx_endpoint: &'vif TxEndpoint<'foa>,
     pub(crate) crypto_state: &'vif NoopMutex<RefCell<Option<CryptoState<'foa>>>>,
     phy_rate: &'vif Cell<WiFiRate>,
 }
 impl StaTxRx<'_, '_> {
     /// Reset the PHY rate.
     pub fn reset_phy_rate(&self) {
-        self.phy_rate.take();
+        self.phy_rate.set(WiFiRate::PhyRate6M);
     }
     /// Get the current PHY rate.
     pub fn phy_rate(&self) -> WiFiRate {
@@ -132,7 +133,7 @@ impl StaTxRx<'_, '_> {
     /// Check if we are currently performing an off channel operation.
     pub fn in_off_channel_operation(&self) -> bool {
         self.interface_control.off_channel_operation_interface()
-            == Some(self.interface_control.get_filter_interface())
+            == Some(self.interface_control.interface())
     }
     pub fn map_crypto_state<O, F: FnMut(&mut CryptoState<'_>) -> O>(&self, f: F) -> Option<O> {
         self.crypto_state.lock(|cs| cs.borrow_mut().as_mut().map(f))
@@ -168,7 +169,7 @@ impl StaResources<'_> {
             rx_router: RxRouter::new(),
             channel_state: ch::State::new(),
             connection_state: ConnectionStateTracker::new(),
-            phy_rate: Cell::new(WiFiRate::PhyRate1ML),
+            phy_rate: Cell::new(WiFiRate::PhyRate6M),
             sta_tx_rx: None,
             crypto_state: NoopMutex::new(RefCell::new(None)),
         }
@@ -193,7 +194,7 @@ pub fn new_sta_interface<'foa: 'vif, 'vif, Rng: RngCore + Clone>(
     StaRunner<'foa, 'vif>,
     StaNetDevice<'vif>,
 ) {
-    let (interface_control, interface_rx_queue) = virtual_interface.split();
+    let (interface_control, interface_rx_queue, tx_endpoint) = virtual_interface.split();
     let mac_address = interface_control.get_factory_mac_for_interface();
     // Initialize embassy_net.
     let (net_runner, net_device) = ch::new(
@@ -213,6 +214,7 @@ pub fn new_sta_interface<'foa: 'vif, 'vif, Rng: RngCore + Clone>(
     .insert(StaTxRx {
         interface_control,
         connection_state: &resources.connection_state,
+        tx_endpoint,
         crypto_state: &resources.crypto_state,
         phy_rate: &resources.phy_rate,
     });

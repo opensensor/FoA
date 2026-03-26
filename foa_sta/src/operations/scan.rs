@@ -1,12 +1,13 @@
 use foa::util::operations::{PostChannelScanAction, ScanConfig};
+use futures_util::FutureExt;
 use heapless::index_map::FnvIndexMap;
 use ieee80211::{
     elements::DSSSParameterSetElement,
     mac_parser::MACAddress,
-    mgmt_frame::{body::BeaconLikeBody, ManagementFrame},
+    mgmt_frame::{ManagementFrame, body::BeaconLikeBody},
 };
 
-use crate::{rx_router::StaRxRouterEndpoint, SecurityConfig, StaError, StaTxRx};
+use crate::{SecurityConfig, StaError, StaTxRx, rx_router::StaRxRouterEndpoint};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 /// Information about a BSS.
@@ -82,12 +83,12 @@ pub async fn search_for_bss<'foa, 'vif, 'params>(
 ///
 /// The key of the `bss_list` is the BSSID ID, of the network.
 /// This will run until either all channels have been scanned, or the `bss_list` is full.
-pub async fn enumerate_bss<'foa, 'vif, 'params, const MAX_BSS: usize>(
+pub fn enumerate_bss<'foa, 'vif, 'params, const MAX_BSS: usize>(
     sta_tx_rx: &'params StaTxRx<'foa, 'vif>,
     rx_router_endpoint: &'params mut StaRxRouterEndpoint<'foa, 'vif>,
     scan_config: Option<ScanConfig<'params>>,
     bss_list: &'params mut FnvIndexMap<[u8; 6], BSS, MAX_BSS>,
-) -> Result<(), StaError> {
+) -> impl Future<Output = Result<(), StaError>> {
     foa::util::operations::scan::<_, ()>(
         sta_tx_rx.interface_control,
         rx_router_endpoint,
@@ -112,7 +113,5 @@ pub async fn enumerate_bss<'foa, 'vif, 'params, const MAX_BSS: usize>(
         },
         scan_config,
     )
-    .await
-    .map(|_| ())
-    .map_err(StaError::LMacError)
+    .map(|result| result.map(|_| ()).map_err(StaError::LMacError))
 }

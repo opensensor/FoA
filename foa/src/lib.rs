@@ -70,9 +70,9 @@ use crate::{
 
 pub mod util;
 
-const RX_BUFFER_COUNT: usize = esp_config_int!(usize, "FOA_CONFIG_RX_BUFFER_COUNT");
-const RX_QUEUE_LEN: usize = esp_config_int!(usize, "FOA_CONFIG_RX_QUEUE_LEN");
-const TX_BUFFER_COUNT: usize = esp_config_int!(usize, "FOA_CONFIG_TX_BUFFER_COUNT");
+const RX_BUFFER_COUNT: usize =  esp_config_int!(usize, "FOA_CONFIG_RX_BUFFER_COUNT");
+const RX_QUEUE_LEN: usize =     esp_config_int!(usize, "FOA_CONFIG_RX_QUEUE_LEN");
+const TX_BUFFER_COUNT: usize =  esp_config_int!(usize, "FOA_CONFIG_TX_BUFFER_COUNT");
 /// The size of a [TxBuffer].
 ///
 /// This is fixed, so that interfaces can rely on the size of a TX buffer.

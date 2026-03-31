@@ -5,9 +5,11 @@ use ieee80211::{common::AssociationID, mac_parser::MACAddress};
 
 use foa::{
     esp_wifi_hal::prelude::WiFiRate,
-    util::operations::{ScanConfig, deauthenticate},
+    util::{
+        operations::{ScanConfig, deauthenticate},
+        random_mac_address,
+    },
 };
-use rand_core::RngCore;
 
 use crate::{
     ConnectionConfig, SecurityConfig, StaTxRx,
@@ -23,17 +25,15 @@ use crate::{
 use super::StaError;
 
 /// This provides control over the STA interface.
-pub struct StaControl<'foa, 'vif, Rng: RngCore> {
+pub struct StaControl<'foa, 'vif> {
     // Low level RX/TX.
     pub(crate) rx_router_endpoint: StaRxRouterEndpoint<'foa, 'vif>,
     pub(crate) sta_tx_rx: &'vif StaTxRx<'foa, 'vif>,
 
     // Misc.
     pub(crate) mac_address: MACAddress,
-    /// Entropy source for the STA implementation.
-    pub(crate) rng: Rng,
 }
-impl<Rng: RngCore + Clone> StaControl<'_, '_, Rng> {
+impl<'foa, 'vif> StaControl<'foa, 'vif> {
     /// Set the MAC address for the STA interface.
     pub fn set_mac_address(&mut self, mac_address: [u8; 6]) -> Result<(), StaError> {
         if self.sta_tx_rx.connection_state.connection_info().is_some() {
@@ -47,10 +47,7 @@ impl<Rng: RngCore + Clone> StaControl<'_, '_, Rng> {
     ///
     /// This will also return the MAC address.
     pub fn randomize_mac_address(&mut self) -> Result<[u8; 6], StaError> {
-        let mut mac_address = [0x00; 6];
-        self.rng.fill_bytes(mac_address.as_mut_slice());
-        // By clearing the LSB of the first octet, we ensure that the local bit isn't set.
-        mac_address[0] &= !(1);
+        let mac_address = random_mac_address();
         self.set_mac_address(mac_address).map(|_| mac_address)
     }
 
@@ -70,11 +67,11 @@ impl<Rng: RngCore + Clone> StaControl<'_, '_, Rng> {
         )
     }
     /// Look for a specific ESS and break once the first match is found.
-    pub fn find_ess<'a>(
-        &'a mut self,
-        scan_config: Option<ScanConfig<'a>>,
-        ssid: &str,
-    ) -> impl Future<Output = Result<BSS, StaError>> {
+    pub fn find_ess<'params>(
+        &'params mut self,
+        scan_config: Option<ScanConfig<'params>>,
+        ssid: &'params str,
+    ) -> impl Future<Output = Result<BSS, StaError>> + use<'foa, 'vif, 'params> {
         search_for_bss(
             self.sta_tx_rx,
             &mut self.rx_router_endpoint,
@@ -113,7 +110,6 @@ impl<Rng: RngCore + Clone> StaControl<'_, '_, Rng> {
                 own_address: self.mac_address,
                 credentials,
             },
-            self.rng.clone(),
         )
         .await?;
         debug!(

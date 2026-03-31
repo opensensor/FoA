@@ -1,8 +1,7 @@
 use core::net::Ipv6Addr;
 
 use embassy_time::Duration;
-use foa::{esp_wifi_hal::prelude::RxFilterBank, LMacInterfaceControl};
-use rand_core::RngCore;
+use foa::{esp_wifi_hal::prelude::RxFilterBank, util::random_mac_address, LMacInterfaceControl};
 
 use crate::{
     hw_address_to_ipv6,
@@ -13,14 +12,13 @@ use crate::{
 };
 
 /// Control interface for the AWDL interface.
-pub struct AwdlControl<'foa, 'vif, Rng: RngCore> {
+pub struct AwdlControl<'foa, 'vif> {
     pub(crate) interface_control: &'vif LMacInterfaceControl<'foa>,
     pub(crate) common_resources: &'vif CommonResources,
-    pub(crate) rng: Rng,
     pub(crate) channel: u8,
     pub(crate) mac_address: [u8; 6],
 }
-impl<Rng: RngCore> AwdlControl<'_, '_, Rng> {
+impl AwdlControl<'_, '_> {
     /// Set and enable all filters required for the interface.
     fn enable_filters(&self) {
         self.interface_control
@@ -91,10 +89,7 @@ impl<Rng: RngCore> AwdlControl<'_, '_, Rng> {
     ///
     /// This will also return the MAC address.
     pub fn randomize_mac_address(&mut self) -> [u8; 6] {
-        let mut mac_address = [0x00; 6];
-        self.rng.fill_bytes(mac_address.as_mut_slice());
-        // By clearing the LSB of the first octet, we ensure that the local bit isn't set.
-        mac_address[0] &= !(1);
+        let mac_address = random_mac_address();
         self.set_mac_address(mac_address);
         mac_address
     }

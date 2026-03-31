@@ -97,15 +97,13 @@ async fn main(spawner: Spawner) {
     let ([vif_0, vif_1, ..], foa_runner) = foa::init(Box::leak(foa_resources), peripherals.WIFI);
     spawner.spawn(foa_task(foa_runner)).unwrap();
 
-    let rng = Rng::new();
-
     let mut stas = [vif_0, vif_1].map(|vif| {
         let sta_resources = Box::new(StaResources::new());
 
         let vif = Box::new(vif);
 
         let (sta_control, sta_runner, sta_net_device) =
-            foa_sta::new_sta_interface(Box::leak(vif), Box::leak(sta_resources), rng);
+            foa_sta::new_sta_interface(Box::leak(vif), Box::leak(sta_resources));
         spawner.spawn(sta_task(sta_runner)).unwrap();
         (sta_control, sta_net_device)
     });

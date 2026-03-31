@@ -34,7 +34,7 @@
 use core::cell::{Cell, RefCell};
 
 use connection_state::ConnectionStateTracker;
-use embassy_net::driver::HardwareAddress;
+use embassy_net_driver::HardwareAddress;
 use embassy_sync::blocking_mutex::NoopMutex;
 use esp_config::esp_config_int;
 use ieee80211::{common::IEEE80211StatusCode, mac_parser::MACAddress};
@@ -53,7 +53,6 @@ pub use control::*;
 pub use operations::scan::BSS;
 
 mod runner;
-use rand_core::RngCore;
 use rsn::CryptoState;
 pub use runner::StaRunner;
 use runner::{ConnectionRunner, RoutingRunner};
@@ -185,12 +184,11 @@ impl Default for StaResources<'_> {
 pub type StaNetDevice<'a> = embassy_net_driver_channel::Device<'a, MTU>;
 
 /// Initialize a new STA interface.
-pub fn new_sta_interface<'foa: 'vif, 'vif, Rng: RngCore + Clone>(
+pub fn new_sta_interface<'foa: 'vif, 'vif>(
     virtual_interface: &'vif mut VirtualInterface<'foa>,
     resources: &'vif mut StaResources<'foa>,
-    rng: Rng,
 ) -> (
-    StaControl<'foa, 'vif, Rng>,
+    StaControl<'foa, 'vif>,
     StaRunner<'foa, 'vif>,
     StaNetDevice<'vif>,
 ) {
@@ -225,7 +223,6 @@ pub fn new_sta_interface<'foa: 'vif, 'vif, Rng: RngCore + Clone>(
             sta_tx_rx,
             mac_address: MACAddress::new(mac_address),
             rx_router_endpoint: foreground_endpoint,
-            rng,
         },
         StaRunner {
             tx_runner,

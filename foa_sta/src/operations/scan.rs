@@ -52,16 +52,16 @@ impl BSS {
 /// Search for a BSS, with the specified [ScanConfig].
 ///
 /// This will return immediately when the first beacon with the specified SSID is received.
-pub async fn search_for_bss<'foa, 'vif, 'params>(
+pub fn search_for_bss<'foa, 'vif, 'params>(
     sta_tx_rx: &'params StaTxRx<'foa, 'vif>,
     rx_router_endpoint: &'params mut StaRxRouterEndpoint<'foa, 'vif>,
     scan_config: Option<ScanConfig<'params>>,
-    ssid: &str,
-) -> Result<BSS, StaError> {
-    match foa::util::operations::scan::<_, BSS>(
+    ssid: &'params str,
+) -> impl Future<Output = Result<BSS, StaError>> + use<'foa, 'vif, 'params> {
+    foa::util::operations::scan::<_, BSS>(
         sta_tx_rx.interface_control,
         rx_router_endpoint,
-        |beacon_frame, received_frame, _channel| {
+        move |beacon_frame, received_frame, _channel| {
             if beacon_frame.ssid() != Some(ssid) {
                 return PostChannelScanAction::Continue;
             }
@@ -72,12 +72,11 @@ pub async fn search_for_bss<'foa, 'vif, 'params>(
         },
         scan_config,
     )
-    .await
-    {
+    .map(|res| match res {
         Ok(Some(bss)) => Ok(bss),
         Ok(None) => Err(StaError::UnableToFindEss),
         Err(lmac_error) => Err(StaError::LMacError(lmac_error)),
-    }
+    })
 }
 /// Enumerate all BSS's, with the specified [ScanConfig].
 ///

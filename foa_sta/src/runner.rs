@@ -4,7 +4,7 @@ use embassy_futures::{
     join::join,
     select::{Either3, select3},
 };
-use embassy_net::driver::{HardwareAddress, LinkState};
+use embassy_net_driver::{HardwareAddress, LinkState};
 use embassy_net_driver_channel::{RxRunner, StateRunner, TxRunner};
 use embassy_time::Ticker;
 use ethernet::{Ethernet2Frame, Ethernet2Header};
@@ -391,19 +391,18 @@ impl RoutingRunner<'_, '_> {
             // 1. Is multicast
             // 2. Is the address, with which we're already associated with a BSS.
             // 3. Is the address, with which we're currently associating with a BSS.
-            if !address_1.is_multicast() {
-                if let Some(own_address) = self
+            if !address_1.is_multicast()
+                && let Some(own_address) = self
                     .sta_tx_rx
                     .connection_state
                     .connection_info()
                     .map(|connection_info| connection_info.own_address)
                     .or_else(|| self.connecting_mac_address())
-                {
-                    if own_address != address_1 {
-                        continue;
-                    }
-                }
+                && own_address != address_1
+            {
+                continue;
             }
+
             // We won't process any frames, while another interface is doing an off channel
             // operation.
             if !self.sta_tx_rx.in_off_channel_operation()

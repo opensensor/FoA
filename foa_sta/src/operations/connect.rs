@@ -2,6 +2,7 @@ use core::{array, marker::PhantomData, mem};
 
 use embassy_futures::join::join;
 use embassy_time::WithTimeout;
+use esp_hal::rng::Rng;
 use foa::{
     ReceivedFrame, RetryBehaviour, TxBuffer, TxReturnData,
     esp_wifi_hal::{
@@ -35,7 +36,6 @@ use ieee80211::{
     scroll::{self, Pread, Pwrite, ctx::TryIntoCtx},
 };
 use llc_rs::{EtherType, SnapLlcFrame};
-use rand_core::RngCore;
 
 use crate::{
     ConnectionConfig, CryptoState, SecurityConfig, StaError, StaTxRx,
@@ -456,7 +456,6 @@ impl<'foa, 'vif, 'params> ConnectionOperation<'foa, 'vif, 'params> {
         &self,
         pmk: [u8; PMK_LENGTH],
         router_operation: &mut StaRxRouterScopedOperation<'foa, 'vif, 'params>,
-        mut rng: impl RngCore,
         bss: &'params BSS,
     ) -> Result<SecurityAssociations, StaError> {
         router_operation.transition(
@@ -466,7 +465,7 @@ impl<'foa, 'vif, 'params> ConnectionOperation<'foa, 'vif, 'params> {
             .expect("This should not fail, since all three connecting operations have the same compatibility and there is no await point in the transition.");
 
         let mut supplicant_nonce = [0u8; 32];
-        rng.fill_bytes(&mut supplicant_nonce);
+        Rng::new().read(&mut supplicant_nonce);
         debug!(
             "Starting 4WHS. PMK: {}; SNonce: {}",
             HexWrapper(&pmk),
@@ -550,7 +549,6 @@ impl<'foa, 'vif, 'params> ConnectionOperation<'foa, 'vif, 'params> {
         self,
         rx_router_endpoint: &'params mut StaRxRouterEndpoint<'foa, 'vif>,
         bss: &BSS,
-        rng: impl RngCore,
     ) -> Result<AssociationID, StaError> {
         debug!(
             "Connecting to {} on channel {} with MAC address {}.",
@@ -612,7 +610,7 @@ impl<'foa, 'vif, 'params> ConnectionOperation<'foa, 'vif, 'params> {
         let aid = self.do_assoc(&mut router_operation, bss).await?;
 
         if let Some((pmk, gtk_key_slot, ptk_key_slot)) = pmk_and_key_slots {
-            let crypto_keys = self.do_4whs(pmk, &mut router_operation, rng, bss).await?;
+            let crypto_keys = self.do_4whs(pmk, &mut router_operation, bss).await?;
             self.sta_tx_rx.crypto_state.lock(|rc| {
                 let _ = rc.borrow_mut().insert(CryptoState::new(
                     gtk_key_slot,
@@ -647,11 +645,10 @@ pub fn connect<'foa, 'vif, 'params>(
     rx_router_endpoint: &'params mut StaRxRouterEndpoint<'foa, 'vif>,
     bss: &'params BSS,
     connection_parameters: &'params ConnectionParameters<'params>,
-    rng: impl RngCore,
 ) -> impl Future<Output = Result<AssociationID, StaError>> {
     ConnectionOperation {
         sta_tx_rx,
         connection_parameters,
     }
-    .run(rx_router_endpoint, bss, rng)
+    .run(rx_router_endpoint, bss)
 }

@@ -3,7 +3,7 @@
 
 use embassy_executor::Spawner;
 use esp_backtrace as _;
-use esp_hal::{rng::Rng, timer::timg::TimerGroup};
+use esp_hal::timer::timg::TimerGroup;
 use esp_println as _;
 use foa::{FoAResources, FoARunner, VirtualInterface};
 use foa_awdl::{AwdlResources, AwdlRunner};
@@ -40,7 +40,7 @@ async fn main(spawner: Spawner) {
     let awdl_vif = mk_static!(VirtualInterface<'static>, awdl_vif);
     let awdl_resources = mk_static!(AwdlResources, AwdlResources::new());
     let (mut awdl_control, awdl_runner, _awdl_net_device, _awdl_event_queue_rx) =
-        foa_awdl::new_awdl_interface(awdl_vif, awdl_resources, Rng::new());
+        foa_awdl::new_awdl_interface(awdl_vif, awdl_resources);
     spawner.spawn(awdl_task(awdl_runner)).unwrap();
     awdl_control
         .start()

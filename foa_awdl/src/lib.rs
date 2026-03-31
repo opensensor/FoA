@@ -44,7 +44,6 @@ use embassy_net_driver_channel::driver::HardwareAddress;
 use embassy_sync::channel::DynamicReceiver;
 use esp_config::esp_config_int;
 use foa::{esp_wifi_hal::prelude::RxFilterBank, VirtualInterface};
-use rand_core::RngCore;
 
 mod control;
 mod event;
@@ -81,12 +80,11 @@ pub type AwdlEventQueueReceiver<'a> = DynamicReceiver<'a, AwdlEvent>;
 /// Initialize and AWDL interface.
 ///
 /// You'll get a control interface, a runner, a net device and a receiver for the event queue.
-pub fn new_awdl_interface<'foa, 'vif, Rng: RngCore + Clone>(
+pub fn new_awdl_interface<'foa, 'vif>(
     virtual_interface: &'vif mut VirtualInterface<'foa>,
     resources: &'vif mut AwdlResources,
-    rng: Rng,
 ) -> (
-    AwdlControl<'foa, 'vif, Rng>,
+    AwdlControl<'foa, 'vif>,
     AwdlRunner<'foa, 'vif>,
     AwdlNetDevice<'vif>,
     AwdlEventQueueReceiver<'vif>,
@@ -104,7 +102,6 @@ pub fn new_awdl_interface<'foa, 'vif, Rng: RngCore + Clone>(
     (
         AwdlControl {
             interface_control,
-            rng,
             common_resources: &resources.common_resources,
             channel: 6,
             mac_address: interface_control.get_factory_mac_for_interface(),

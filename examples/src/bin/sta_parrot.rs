@@ -40,7 +40,7 @@ async fn foa_task(mut foa_runner: FoARunner<'static>) {
     foa_runner.run().await
 }
 #[embassy_executor::task]
-async fn sta_task(mut sta_runner: StaRunner<'static, 'static>) -> ! {
+async fn sta_task(mut sta_runner: StaRunner<'static, 'static>) {
     sta_runner.run().await
 }
 #[embassy_executor::task]

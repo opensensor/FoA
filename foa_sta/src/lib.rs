@@ -41,7 +41,7 @@ use ieee80211::{common::IEEE80211StatusCode, mac_parser::MACAddress};
 
 use embassy_net_driver_channel::{self as ch};
 use foa::{
-    LMacError, LMacInterfaceControl, TxEndpoint, VirtualInterface, esp_wifi_hal::prelude::WiFiRate,
+    LMacError, LMacInterfaceControl, TxEndpoint, VirtualInterface, esp_wifi_hal::prelude::*,
     util::rx_router::RxRouter,
 };
 
@@ -114,19 +114,19 @@ pub(crate) struct StaTxRx<'foa, 'vif> {
     pub(crate) connection_state: &'vif ConnectionStateTracker,
     pub(crate) tx_endpoint: &'vif TxEndpoint<'foa>,
     pub(crate) crypto_state: &'vif NoopMutex<RefCell<Option<CryptoState<'foa>>>>,
-    phy_rate: &'vif Cell<WiFiRate>,
+    phy_rate: &'vif Cell<TxPhyRate>,
 }
 impl StaTxRx<'_, '_> {
     /// Reset the PHY rate.
     pub fn reset_phy_rate(&self) {
-        self.phy_rate.set(WiFiRate::PhyRate6M);
+        self.phy_rate.set(OfdmRate::Mbits6.into());
     }
     /// Get the current PHY rate.
-    pub fn phy_rate(&self) -> WiFiRate {
+    pub fn phy_rate(&self) -> TxPhyRate {
         self.phy_rate.get()
     }
     /// Set the current PHY rate.
-    pub fn set_phy_rate(&self, phy_rate: WiFiRate) {
+    pub fn set_phy_rate(&self, phy_rate: TxPhyRate) {
         self.phy_rate.set(phy_rate);
     }
     /// Check if we are currently performing an off channel operation.
@@ -155,7 +155,7 @@ pub struct StaResources<'foa> {
 
     // State tracking.
     connection_state: ConnectionStateTracker,
-    phy_rate: Cell<WiFiRate>,
+    phy_rate: Cell<TxPhyRate>,
 
     // Misc.
     sta_tx_rx: Option<StaTxRx<'static, 'static>>,
@@ -168,7 +168,7 @@ impl StaResources<'_> {
             rx_router: RxRouter::new(),
             channel_state: ch::State::new(),
             connection_state: ConnectionStateTracker::new(),
-            phy_rate: Cell::new(WiFiRate::PhyRate6M),
+            phy_rate: Cell::new(TxPhyRate::Ofdm(OfdmRate::Mbits6)),
             sta_tx_rx: None,
             crypto_state: NoopMutex::new(RefCell::new(None)),
         }
@@ -192,7 +192,7 @@ pub fn new_sta_interface<'foa: 'vif, 'vif>(
     StaRunner<'foa, 'vif>,
     StaNetDevice<'vif>,
 ) {
-    let (interface_control, interface_rx_queue, tx_endpoint) = virtual_interface.split();
+    let (interface_control, interface_rx_endpoint, tx_endpoint) = virtual_interface.split();
     let mac_address = interface_control.get_factory_mac_for_interface();
     // Initialize embassy_net.
     let (net_runner, net_device) = ch::new(
@@ -234,7 +234,7 @@ pub fn new_sta_interface<'foa: 'vif, 'vif>(
             routing_runner: RoutingRunner {
                 rx_router_input,
                 sta_tx_rx,
-                interface_rx_queue,
+                interface_rx_endpoint,
                 rx_runner,
             },
         },

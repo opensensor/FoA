@@ -3,7 +3,7 @@
 
 use defmt::info;
 use embassy_executor::Spawner;
-use embassy_futures::join::join;
+use embassy_futures::select::select;
 use embassy_net::{
     DhcpConfig, Runner as NetRunner, StackResources as NetStackResources,
     dns::DnsSocket,
@@ -15,25 +15,16 @@ use esp_backtrace as _;
 use esp_hal::{
     Async,
     clock::CpuClock,
-    rng::Rng,
     timer::timg::TimerGroup,
     uart::{self, Uart},
 };
 use esp_println as _;
+use examples::{get_credentials, mk_static};
 use foa::{FoAResources, FoARunner, VirtualInterface};
-use foa_sta::{Credentials, StaNetDevice, StaResources, StaRunner};
+use foa_sta::{StaNetDevice, StaResources, StaRunner};
 use reqwless::{client::HttpClient, request::Method, response::BodyReader};
 
 const SSID: &str = env!("SSID");
-
-macro_rules! mk_static {
-    ($t:ty,$val:expr) => {{
-        static STATIC_CELL: static_cell::StaticCell<$t> = static_cell::StaticCell::new();
-        #[deny(unused_attributes)]
-        let x = STATIC_CELL.uninit().write(($val));
-        x
-    }};
-}
 
 #[embassy_executor::task]
 async fn foa_task(mut foa_runner: FoARunner<'static>) {
@@ -57,15 +48,14 @@ async fn main(spawner: Spawner) {
 
     let stack_resources = mk_static!(FoAResources, FoAResources::new());
     let ([sta_vif, ..], foa_runner) = foa::init(stack_resources, peripherals.WIFI);
-    spawner.spawn(foa_task(foa_runner)).unwrap();
+    spawner.must_spawn(foa_task(foa_runner));
 
     let sta_resources = mk_static!(StaResources<'static>, StaResources::default());
     let (mut sta_control, sta_runner, net_device) = foa_sta::new_sta_interface(
         mk_static!(VirtualInterface<'static>, sta_vif),
         sta_resources,
-        Rng::new(),
     );
-    spawner.spawn(sta_task(sta_runner)).unwrap();
+    spawner.must_spawn(sta_task(sta_runner));
 
     let _ = sta_control.randomize_mac_address();
 
@@ -80,7 +70,7 @@ async fn main(spawner: Spawner) {
 
     defmt::unwrap!(
         sta_control
-            .connect_by_ssid(SSID, None, Some(Credentials::Passphrase(env!("PASSWORD"))))
+            .connect_by_ssid(SSID, None, get_credentials())
             .await
     );
 
@@ -124,18 +114,18 @@ async fn main(spawner: Spawner) {
         let mut queue =
             embassy_sync::zerocopy_channel::Channel::<'_, NoopRawMutex, _>::new(queue_buffers);
         let (mut queue_sender, mut queue_receiver) = queue.split();
-        join(
+        select(
             async move {
                 loop {
                     let (parrot_buffer, length) = queue_sender.send().await;
-                    let Ok(read) = chunked_reader.read(&mut parrot_buffer[..1119]).await else {
+                    let Ok(read) = chunked_reader.read(&mut parrot_buffer[..*length]).await else {
                         break;
                     };
                     *length = read;
                     queue_sender.send_done();
                 }
             },
-            async move {
+            async {
                 loop {
                     let (parrot_buffer, length) = queue_receiver.receive().await;
                     let _ = <Uart<'static, Async> as embedded_io_async::Write>::write_all(
@@ -149,6 +139,5 @@ async fn main(spawner: Spawner) {
             },
         )
         .await;
-        loop {}
     }
 }

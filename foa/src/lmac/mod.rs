@@ -85,14 +85,13 @@ impl ChannelState {
     }
     /// Unlock the channel for the specified interface.
     pub fn unlock_channel(&mut self, interface: usize) {
-        if let Some((ref mut interfaces, _)) = self.locks {
-            if interfaces[interface] {
+        if let Some((ref mut interfaces, _)) = self.locks
+            && interfaces[interface] {
                 interfaces[interface] = false;
                 if *interfaces == [false; INTERFACE_COUNT] {
                     self.locks = None;
                 }
             }
-        }
     }
     /// Check whether an off channel operation is in progress.
     pub fn off_channel_operation_in_progress(&self) -> bool {

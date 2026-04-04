@@ -65,9 +65,7 @@ impl KeySlotManager {
     pub fn acquire_key_slot(&mut self) -> Option<usize> {
         // We don't have to worry about race conditions here, since this function is sync and the
         // entire stack runs on one core.
-        (0..KEY_SLOT_COUNT)
-            .filter(|i| check_bit!(self.key_slot_state, bit!(i)))
-            .next()
+        (0..KEY_SLOT_COUNT).find(|i| check_bit!(self.key_slot_state, bit!(i)))
             .inspect(|key_slot| {
                 self.key_slot_state &= !bit!(*key_slot) as u32;
             })
@@ -75,6 +73,6 @@ impl KeySlotManager {
     /// Release a key slot.
     fn release_key_slot(&mut self, key_slot: usize) {
         self.key_slot_state |= bit!(key_slot) as u32;
-        let _ = self.crypto_controller.delete_key(key_slot as usize);
+        let _ = self.crypto_controller.delete_key(key_slot);
     }
 }

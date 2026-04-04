@@ -16,10 +16,7 @@ use awdl_frame_parser::{
 use defmt_or_log::trace;
 use embassy_futures::select::{select4, Either4};
 use embassy_time::{Duration, Instant, Ticker, Timer};
-use foa::{
-    esp_wifi_hal::prelude::{HasLowLevelDriver, TxMacParameters, TxPlcpParameters, WiFiRate},
-    LMacInterfaceControl, TxEndpoint,
-};
+use foa::{esp_wifi_hal::prelude::*, LMacInterfaceControl, TxEndpoint};
 use ieee80211::{
     common::TU,
     mac_parser::{MACAddress, BROADCAST, ZERO},
@@ -152,7 +149,7 @@ impl AwdlManagementRunner<'_, '_> {
             .transmit_beacon_with_hook(
                 &mut tx_buffer[..written],
                 TxPlcpParameters {
-                    rate: WiFiRate::PhyRate12M,
+                    rate: OfdmRate::Mbits12.into(),
                     ..Default::default()
                 },
                 TxMacParameters {

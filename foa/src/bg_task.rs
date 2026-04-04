@@ -18,12 +18,13 @@ pub(crate) struct TxRunner<'res> {
     pub(crate) edca_tx_runners: [TxQueueRunner<'res>; 4],
 }
 impl<'res> TxRunner<'res> {
-    fn run(&mut self) -> impl Future<Output = [(); 4]> + use<'res, '_> {
+    fn run(&mut self) -> impl Future<Output = ()> + use<'res, '_> {
         join_array(
             self.edca_tx_runners
                 .each_mut()
                 .map(|tx_queue_runner| tx_queue_runner.run()),
         )
+        .map(|_| ())
     }
 }
 pub(crate) struct RxRunner<'res> {

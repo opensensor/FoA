@@ -26,11 +26,11 @@
 //! A simple STA mode interface is implemented in [foa_sta](https://github.com/esp32-open-mac/FoA/tree/main/foa_sta).
 //! For details on the supported features, please check the documentation of `foa_sta`.
 
-use core::{array, mem};
+use core::{array, mem, sync::atomic::Ordering};
 
 use embassy_sync::{
     blocking_mutex::raw::NoopRawMutex,
-    channel::{Channel, DynamicReceiver},
+    channel::{Channel, ReceiveFuture},
     mutex::Mutex,
 };
 use esp_config::esp_config_int;
@@ -70,9 +70,12 @@ use crate::{
 
 pub mod util;
 
-const RX_BUFFER_COUNT: usize =  esp_config_int!(usize, "FOA_CONFIG_RX_BUFFER_COUNT");
-const RX_QUEUE_LEN: usize =     esp_config_int!(usize, "FOA_CONFIG_RX_QUEUE_LEN");
-const TX_BUFFER_COUNT: usize =  esp_config_int!(usize, "FOA_CONFIG_TX_BUFFER_COUNT");
+/// Number of buffers used for the hardware RX queue.
+pub const RX_BUFFER_COUNT: usize = esp_config_int!(usize, "FOA_CONFIG_RX_BUFFER_COUNT");
+/// Length of the interface RX queue.
+pub const RX_QUEUE_LEN: usize = esp_config_int!(usize, "FOA_CONFIG_RX_QUEUE_LEN");
+/// Number of buffers preallocated for TX.
+pub const TX_BUFFER_COUNT: usize = esp_config_int!(usize, "FOA_CONFIG_TX_BUFFER_COUNT");
 /// The size of a [TxBuffer].
 ///
 /// This is fixed, so that interfaces can rely on the size of a TX buffer.
@@ -84,8 +87,38 @@ pub type ReceivedFrame<'res> = RxArcBuffer<'res>;
 #[cfg(not(feature = "arc_buffers"))]
 /// A frame received from the driver.
 pub type ReceivedFrame<'res> = BorrowedBuffer<'res>;
-/// A receiver to the RX queue of an interface.
-pub type RxQueueReceiver<'res> = DynamicReceiver<'res, ReceivedFrame<'res>>;
+
+/// An endpoint to an RX queue.
+///
+/// As long as this is alive, the rx queue will be active.
+pub struct RxEndpoint<'res, 'a> {
+    rx_queue: &'a (
+        Channel<NoopRawMutex, ReceivedFrame<'res>, RX_QUEUE_LEN>,
+        AtomicBool,
+    ),
+}
+impl<'res, 'a> RxEndpoint<'res, 'a> {
+    fn new(
+        rx_queue: &'a (
+            Channel<NoopRawMutex, ReceivedFrame<'res>, RX_QUEUE_LEN>,
+            AtomicBool,
+        ),
+    ) -> Self {
+        rx_queue.1.store(true, Ordering::Relaxed);
+        Self { rx_queue }
+    }
+    /// Receive a frame.
+    pub fn receive(
+        &mut self,
+    ) -> ReceiveFuture<'_, NoopRawMutex, ReceivedFrame<'res>, RX_QUEUE_LEN> {
+        self.rx_queue.0.receive()
+    }
+}
+impl Drop for RxEndpoint<'_, '_> {
+    fn drop(&mut self) {
+        self.rx_queue.1.store(false, Ordering::Relaxed);
+    }
+}
 
 /// The resources required by the WiFi stack.
 pub struct FoAResources {
@@ -115,7 +148,7 @@ pub struct FoAResources {
     /// TX buffers used by the [TxBufferManager].
     tx_buffers: [[u8; TX_BUFFER_SIZE]; TX_BUFFER_COUNT],
     /// The aforementioned TX buffer manager.
-    tx_buffer_manager: Option<TxBufferManager<TX_BUFFER_COUNT>>,
+    tx_buffer_manager: Option<TxBufferManager<'static>>,
 }
 impl FoAResources {
     /// Create new stack resources.
@@ -127,7 +160,7 @@ impl FoAResources {
             wifi_resources: WiFiResources::new(),
             #[cfg(feature = "arc_buffers")]
             arc_pool: RxArcPool::new(),
-            rx_queues: [const { (Channel::new(), AtomicBool::new(true)) }; INTERFACE_COUNT],
+            rx_queues: [const { (Channel::new(), AtomicBool::new(false)) }; INTERFACE_COUNT],
             shared_lmac_state: None,
 
             edca_tx_queues: None,
@@ -149,7 +182,10 @@ impl Default for FoAResources {
 /// reference to a VIF.
 pub struct VirtualInterface<'res> {
     interface_control: LMacInterfaceControl<'res>,
-    rx_queue_receiver: RxQueueReceiver<'res>,
+    rx_queue: &'res (
+        Channel<NoopRawMutex, ReceivedFrame<'res>, RX_QUEUE_LEN>,
+        AtomicBool,
+    ),
     tx_endpoint: TxEndpoint<'res>,
 }
 impl<'res> VirtualInterface<'res> {
@@ -157,16 +193,18 @@ impl<'res> VirtualInterface<'res> {
     ///
     /// NOTE: This is intended for interface implementations. User code shouldn't call this,
     /// although nothing will happen.
+    ///
+    /// The RX endpoint is passed by value, as it controls whether a queue is active or not.
     pub fn split<'a>(
         &'a mut self,
     ) -> (
         &'a mut LMacInterfaceControl<'res>,
-        &'a mut RxQueueReceiver<'res>,
+        RxEndpoint<'res, 'a>,
         &'a mut TxEndpoint<'res>,
     ) {
         (
             &mut self.interface_control,
-            &mut self.rx_queue_receiver,
+            RxEndpoint::new(self.rx_queue),
             &mut self.tx_endpoint,
         )
     }
@@ -174,10 +212,7 @@ impl<'res> VirtualInterface<'res> {
     ///
     /// This is releases any prior channel lock, resets all filters and clears the RX queue.
     pub fn reset(&mut self) {
-        // We can't call clear on a DynamicReceiver, so this is the best we can do for now.
-        // This isn't too bad, since this will only be called rarely and the RX queues shouldn't be
-        // that long.
-        while self.rx_queue_receiver.try_receive().is_ok() {}
+        self.rx_queue.0.clear();
         self.interface_control.unlock_channel();
         self.interface_control
             .set_scanning_mode(ScanningMode::Disabled);
@@ -211,19 +246,37 @@ pub fn init<'res>(
     let shared_lmac_state = resources
         .shared_lmac_state
         .insert(SharedLMacState::new(channel_controller, crypto_controller));
-    let tx_buffer_manager = resources
-        .tx_buffer_manager
-        .insert(unsafe { TxBufferManager::new(&mut resources.tx_buffers) });
+    let tx_buffer_manager = unsafe {
+        core::mem::transmute::<
+            &mut Option<TxBufferManager<'static>>,
+            &mut Option<TxBufferManager<'res>>,
+        >(&mut resources.tx_buffer_manager)
+    }
+    .insert(TxBufferManager::new(&mut resources.tx_buffers));
     let lmac_interface_controls = shared_lmac_state.split(rx_interface_controllers);
     let rx_queue_senders = array::from_fn(|i| {
         (
-            unsafe { mem::transmute(resources.rx_queues[i].0.dyn_sender()) },
+            unsafe {
+                mem::transmute::<
+                    embassy_sync::channel::DynamicSender<
+                        'res,
+                        esp_wifi_hal::borrowed_buffer::BorrowedBuffer<'static>,
+                    >,
+                    embassy_sync::channel::DynamicSender<
+                        'res,
+                        esp_wifi_hal::borrowed_buffer::BorrowedBuffer<'res>,
+                    >,
+                >(resources.rx_queues[i].0.dyn_sender())
+            },
             &resources.rx_queues[i].1,
         )
     });
     // TX queue setup
     let beacon_tx_queue = resources.beacon_tx_queue.insert(Mutex::new(unsafe {
-        core::mem::transmute(beacon_tx_endpoint)
+        core::mem::transmute::<
+            esp_wifi_hal::async_driver::TxQueueEndpoint<'res>,
+            esp_wifi_hal::async_driver::TxQueueEndpoint<'static>,
+        >(beacon_tx_endpoint)
     }));
     let edca_tx_queues = resources
         .edca_tx_queues
@@ -234,17 +287,32 @@ pub fn init<'res>(
 
     let virtual_interfaces = unsafe {
         lmac_interface_controls.map(|lmac_interface_control| VirtualInterface {
-            rx_queue_receiver: mem::transmute(
-                resources.rx_queues[lmac_interface_control.interface()]
-                    .0
-                    .dyn_receiver(),
+            rx_queue: mem::transmute::<
+                &'res (
+                    embassy_sync::channel::Channel<
+                        embassy_sync::blocking_mutex::raw::NoopRawMutex,
+                        esp_wifi_hal::borrowed_buffer::BorrowedBuffer<'static>,
+                        2,
+                    >,
+                    portable_atomic::AtomicBool,
+                ),
+                &'res (
+                    embassy_sync::channel::Channel<
+                        embassy_sync::blocking_mutex::raw::NoopRawMutex,
+                        esp_wifi_hal::borrowed_buffer::BorrowedBuffer<'res>,
+                        2,
+                    >,
+                    portable_atomic::AtomicBool,
+                ),
+            >(&resources.rx_queues[lmac_interface_control.interface()]),
+            tx_endpoint: mem::transmute::<tx_queue::TxEndpoint<'_>, tx_queue::TxEndpoint<'res>>(
+                TxEndpoint {
+                    beacon_tx_endpoint: beacon_tx_queue,
+                    dyn_tx_buffer_manager: tx_buffer_manager,
+                    edca_tx_endpoints: edca_tx_queues.each_ref(),
+                    interface: lmac_interface_control.interface(),
+                },
             ),
-            tx_endpoint: mem::transmute(TxEndpoint {
-                beacon_tx_endpoint: &beacon_tx_queue,
-                dyn_tx_buffer_manager: tx_buffer_manager.dyn_tx_buffer_manager(),
-                edca_tx_endpoints: edca_tx_queues.each_ref(),
-                interface: lmac_interface_control.interface(),
-            }),
             interface_control: lmac_interface_control,
         })
     };

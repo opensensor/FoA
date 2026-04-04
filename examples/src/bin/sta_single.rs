@@ -11,20 +11,12 @@ use embassy_net::{
 use embassy_time::Timer;
 
 use esp_backtrace as _;
-use esp_hal::{rng::Rng, timer::timg::TimerGroup};
+use esp_hal::timer::timg::TimerGroup;
 use esp_println as _;
 
+use examples::{get_credentials, mk_static};
 use foa::{FoAResources, FoARunner, VirtualInterface};
-use foa_sta::{ConnectionConfig, Credentials, StaNetDevice, StaResources, StaRunner};
-
-macro_rules! mk_static {
-    ($t:ty,$val:expr) => {{
-        static STATIC_CELL: static_cell::StaticCell<$t> = static_cell::StaticCell::new();
-        #[deny(unused_attributes)]
-        let x = STATIC_CELL.uninit().write(($val));
-        x
-    }};
-}
+use foa_sta::{ConnectionConfig, StaNetDevice, StaResources, StaRunner};
 
 const SSID: &str = env!("SSID");
 
@@ -78,7 +70,7 @@ async fn main(spawner: Spawner) {
                     beacon_timeout: None,
                     ..Default::default()
                 }),
-                Some(Credentials::Passphrase(env!("PASSWORD")))
+                get_credentials()
             )
             .await
     );

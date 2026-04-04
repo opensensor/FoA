@@ -13,11 +13,10 @@ use embassy_sync::{
 use esp_wifi_hal::{
     ll::EdcaAccessCategory,
     prelude::{TxError, TxErrorBehaviour, TxMacParameters, TxPlcpParameters, TxQueueEndpoint},
-    rates::WiFiRate,
 };
 use portable_atomic::AtomicBool;
 
-use crate::{TX_BUFFER_COUNT, TxBuffer, tx_buffer_management::DynTxBufferManager};
+use crate::{TX_BUFFER_COUNT, TxBuffer, tx_buffer_management::TxBufferManager};
 
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -29,11 +28,12 @@ pub enum RetryBehaviour {
     /// Retry as many times, as specified.
     ///
     /// With the same rate.
-    RetryUntil(usize),
+    RetryUntil(u8),
+    #[cfg(feature = "multi_rate_retry")]
     /// Retry with the specified rates.
     ///
     /// Rate control algorithms like this.
-    MultiRateRetry(heapless::Vec<WiFiRate, 7>),
+    MultiRateRetry(heapless::Vec<esp_wifi_hal::rates::TxPhyRate, 3>),
 }
 impl RetryBehaviour {
     /// Convert this to a [TxErrorBehaviour].
@@ -41,6 +41,7 @@ impl RetryBehaviour {
         match self {
             Self::Drop => TxErrorBehaviour::Drop,
             Self::RetryUntil(retries) => TxErrorBehaviour::RetryUntil(*retries),
+    #[cfg(feature = "multi_rate_retry")]
             Self::MultiRateRetry(rates) => TxErrorBehaviour::MultiRateRetry(rates.as_slice()),
         }
     }
@@ -60,7 +61,7 @@ pub struct PendingFrame {
 /// Data returned by transmitting.
 pub struct TxReturnData<'res> {
     /// The transmission result.
-    pub result: Result<usize, TxError>,
+    pub result: Result<u8, TxError>,
     /// The transmitted frame.
     ///
     /// This is provided, in case you want to retransmit the same buffer.
@@ -164,7 +165,7 @@ pub struct TxQueue {
     inner: blocking_mutex::NoopMutex<RefCell<TxQueueState>>,
 }
 impl TxQueue {
-    pub const fn new<'res>() -> Self {
+    pub const fn new() -> Self {
         Self {
             inner: blocking_mutex::NoopMutex::new(RefCell::new(TxQueueState::new())),
         }
@@ -250,7 +251,7 @@ impl<'res> TxQueueRunner<'res> {
 
                         Some(
                             (InProgressTransmission {
-                                tx_queue: tx_queue,
+                                tx_queue,
                                 index: front_index,
                                 return_data_expected: return_data_expeceted.load(Ordering::Relaxed),
                             }, pending_frame)
@@ -429,7 +430,7 @@ impl Drop for PendingTransmission<'_> {
 pub struct TxEndpoint<'res> {
     pub(crate) beacon_tx_endpoint: &'res Mutex<NoopRawMutex, TxQueueEndpoint<'static>>,
     /// Access to the TX buffer manager.
-    pub(crate) dyn_tx_buffer_manager: DynTxBufferManager<'res>,
+    pub(crate) dyn_tx_buffer_manager: &'res TxBufferManager<'res>,
     pub(crate) edca_tx_endpoints: [&'res TxQueue; 4],
     pub(crate) interface: usize,
 }
@@ -456,7 +457,7 @@ impl<'res> TxEndpoint<'res> {
         retry_behaviour: RetryBehaviour,
     ) -> PendingTransmission<'res> {
         self.edca_tx_endpoints[edca_access_category.hardware_slot() - 1].enqueue_frame(PendingFrame {
-            frame: unsafe { core::mem::transmute(frame) },
+            frame: unsafe { core::mem::transmute::<TxBuffer<'res>, TxBuffer<'static>>(frame) },
             frame_length,
             plcp_parameters,
             mac_parameters,
@@ -474,7 +475,7 @@ impl<'res> TxEndpoint<'res> {
         plcp_parameters: TxPlcpParameters,
         mac_parameters: TxMacParameters,
         retry_behaviour: RetryBehaviour,
-    ) -> Result<usize, TxError> {
+    ) -> Result<u8, TxError> {
         self.beacon_tx_endpoint
             .lock()
             .await

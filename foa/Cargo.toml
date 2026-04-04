@@ -17,7 +17,7 @@ esp-hal = { version = "1.0.0", default-features = false }
 esp-wifi-hal = { path = "../../esp-wifi-hal/esp-wifi-hal/" }
 static_cell = "2.1.1"
 critical-section = "1.2.0"
-portable-atomic = "1.13.1"
+portable-atomic = { version = "1.13.1", default-features = false }
 esp-config = "0.6.0"
 defmt-or-log = { version = "0.2.3", default-features = false }
 defmt = { version = "1.0.1", optional = true }
@@ -32,6 +32,7 @@ esp-config = { version = "0.6.1", features = ["build"] }
 
 [features]
 arc_buffers = []
+multi_rate_retry = []
 
 log = ["dep:log", "defmt-or-log/log", "esp-wifi-hal/log"]
 defmt = [

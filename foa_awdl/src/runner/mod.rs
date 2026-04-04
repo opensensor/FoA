@@ -7,8 +7,7 @@ use embassy_net_driver_channel::{
     driver::{HardwareAddress, LinkState},
     Runner, StateRunner,
 };
-use embassy_sync::channel::DynamicReceiver;
-use foa::{LMacInterfaceControl, ReceivedFrame, TxEndpoint};
+use foa::{LMacInterfaceControl, RxEndpoint, TxEndpoint};
 
 mod management;
 mod rx;
@@ -29,7 +28,7 @@ pub struct AwdlRunner<'foa, 'vif> {
 impl<'foa, 'vif> AwdlRunner<'foa, 'vif> {
     pub(crate) fn new(
         interface_control: &'vif LMacInterfaceControl<'foa>,
-        rx_queue: &'vif DynamicReceiver<'foa, ReceivedFrame<'foa>>,
+        interface_rx_endpoint: RxEndpoint<'foa, 'vif>,
         tx_endpoint: &'vif TxEndpoint<'foa>,
         common_resources: &'vif CommonResources,
         net_runner: Runner<'vif, AWDL_MTU>,
@@ -42,7 +41,7 @@ impl<'foa, 'vif> AwdlRunner<'foa, 'vif> {
                 tx_endpoint,
             },
             mpdu_rx_runner: AwdlMpduRxRunner {
-                rx_queue,
+                interface_rx_endpoint,
                 common_resources,
                 rx_runner,
             },

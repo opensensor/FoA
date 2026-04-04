@@ -3,8 +3,7 @@ use core::marker::PhantomData;
 use crate::{PendingTransmission, RetryBehaviour, TxEndpoint};
 use esp_wifi_hal::{
     ll::EdcaAccessCategory,
-    prelude::{TxMacParameters, TxPlcpParameters},
-    rates::WiFiRate,
+    prelude::{TxMacParameters, TxPhyRate, TxPlcpParameters},
 };
 use ieee80211::{
     common::{IEEE80211Reason, SequenceControl},
@@ -30,7 +29,7 @@ pub async fn deauthenticate<'a>(
     bssid: MACAddress,
     sta_address: MACAddress,
     to_ap: bool,
-    rate: WiFiRate,
+    rate: TxPhyRate,
 ) -> PendingTransmission<'a> {
     let mut tx_buf = tx_endpoint.alloc_tx_buf().await;
     let (receiver_address, transmitter_address) = if to_ap {

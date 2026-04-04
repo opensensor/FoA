@@ -4,7 +4,7 @@ use heapless::index_map::FnvIndexMap;
 use ieee80211::{common::AssociationID, mac_parser::MACAddress};
 
 use foa::{
-    esp_wifi_hal::prelude::WiFiRate,
+    esp_wifi_hal::prelude::*,
     util::{
         operations::{ScanConfig, deauthenticate},
         random_mac_address,
@@ -181,11 +181,11 @@ impl<'foa, 'vif> StaControl<'foa, 'vif> {
             .map_connection_info(|connection_info| connection_info.aid)
     }
     /// Get the currently used PHY rate.
-    pub fn phy_rate(&self) -> WiFiRate {
+    pub fn phy_rate(&self) -> TxPhyRate {
         self.sta_tx_rx.phy_rate()
     }
     /// Override the PHY rate.
-    pub fn override_phy_rate(&self, phy_rate: WiFiRate) {
+    pub fn override_phy_rate(&self, phy_rate: TxPhyRate) {
         self.sta_tx_rx.set_phy_rate(phy_rate);
     }
 }

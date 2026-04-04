@@ -15,8 +15,9 @@ esp-println = { version = "0.16.1", features = [
     "uart",
 ], default-features = false }
 
-embassy-net = { version = "0.7.1", features = [
+embassy-net = { version = "0.9.0", features = [
     "proto-ipv4",
+    "proto-ipv6",
     "dhcpv4",
     "medium-ethernet",
     "tcp",
@@ -34,18 +35,17 @@ foa_awdl = { path = "../foa_awdl", features = ["defmt"] }
 
 static_cell = "2.1.0"
 heapless = "0.9.1"
-embedded-io-async = "0.6.1"
+embedded-io-async = "0.7.0"
 
 defmt = "1.0.1"
-reqwless = { version = "0.13.0", default-features = false, features = [
+reqwless = { version = "0.14.0", default-features = false, features = [
     "defmt",
 ] }
 # esp-mbedtls = { git = "https://github.com/esp-rs/esp-mbedtls.git", default-features = false,  }
-rand_core = "0.9.3"
 embedded-io = "0.7.1"
 esp-alloc = "0.9.0"
 esp-bootloader-esp-idf = { version = "0.4.0", features = ["esp-rom-sys"] }
-embassy-sync = "0.7.2"
+embassy-sync = "0.8.0"
 
 [profile.dev]
 # Rust debug is too slow.

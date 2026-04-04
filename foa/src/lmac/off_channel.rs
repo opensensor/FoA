@@ -112,7 +112,7 @@ impl OffChannelOperation<'_, '_> {
     }
     /// Set the scanning mode.
     pub fn set_scanning_mode(&mut self, scanning_mode: ScanningMode) {
-        let _ = self.interface_control.set_scanning_mode(scanning_mode);
+        self.interface_control.set_scanning_mode(scanning_mode);
     }
 }
 impl Drop for OffChannelOperation<'_, '_> {

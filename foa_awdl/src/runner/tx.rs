@@ -5,13 +5,7 @@ use defmt_or_log::{debug, error, trace};
 use embassy_net_driver_channel::TxRunner;
 use embassy_time::{Duration, Timer};
 use ether_type::EtherType;
-use foa::{
-    esp_wifi_hal::{
-        ll::EdcaAccessCategory,
-        prelude::{TxMacParameters, TxPlcpParameters, WiFiRate},
-    },
-    RetryBehaviour, TxEndpoint,
-};
+use foa::{esp_wifi_hal::prelude::*, RetryBehaviour, TxEndpoint};
 use ieee80211::{data_frame::builder::DataFrameBuilder, mac_parser::MACAddress, scroll::Pwrite};
 use llc_rs::SnapLlcFrame;
 use smoltcp::wire::EthernetFrame;
@@ -118,7 +112,7 @@ impl AwdlMsduTxRunner<'_, '_> {
             tx_buffer,
             written,
             TxPlcpParameters {
-                rate: WiFiRate::PhyRate24M,
+                rate: OfdmRate::Mbits12.into(),
                 ..Default::default()
             },
             TxMacParameters::default(),

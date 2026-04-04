@@ -90,7 +90,7 @@ pub fn new_awdl_interface<'foa, 'vif>(
     AwdlEventQueueReceiver<'vif>,
 ) {
     virtual_interface.reset();
-    let (interface_control, rx_queue, tx_endpoint) = virtual_interface.split();
+    let (interface_control, interface_rx_endpoint, tx_endpoint) = virtual_interface.split();
 
     interface_control.set_filter(RxFilterBank::Bssid, AWDL_BSSID);
 
@@ -108,7 +108,7 @@ pub fn new_awdl_interface<'foa, 'vif>(
         },
         AwdlRunner::new(
             interface_control,
-            rx_queue,
+            interface_rx_endpoint,
             tx_endpoint,
             &resources.common_resources,
             net_runner,

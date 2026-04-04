@@ -14,11 +14,12 @@ use embassy_time::Timer;
 
 use esp_alloc::heap_allocator;
 use esp_backtrace as _;
-use esp_hal::{rng::Rng, timer::timg::TimerGroup};
+use esp_hal::timer::timg::TimerGroup;
 use esp_println as _;
 
+use examples::get_credentials;
 use foa::{FoAResources, FoARunner};
-use foa_sta::{ConnectionConfig, Credentials, StaNetDevice, StaResources, StaRunner};
+use foa_sta::{ConnectionConfig, StaNetDevice, StaResources, StaRunner};
 
 extern crate alloc;
 use alloc::boxed::Box;
@@ -29,7 +30,7 @@ async fn foa_task(mut foa_runner: FoARunner<'static>) {
     foa_runner.run().await
 }
 #[embassy_executor::task(pool_size = 2)]
-async fn sta_task(mut sta_runner: StaRunner<'static, 'static>) -> ! {
+async fn sta_task(mut sta_runner: StaRunner<'static, 'static>) {
     sta_runner.run().await
 }
 #[embassy_executor::task(pool_size = 2)]
@@ -120,7 +121,7 @@ async fn main(spawner: Spawner) {
                         beacon_timeout: None,
                         ..Default::default()
                     }),
-                    Some(Credentials::Passphrase(env!("PASSWORD"))),
+                    get_credentials(),
                 )
                 .await
                 .unwrap();

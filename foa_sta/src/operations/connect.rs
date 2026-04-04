@@ -576,8 +576,8 @@ impl<'foa, 'vif, 'params> ConnectionOperation<'foa, 'vif, 'params> {
         )
         .await;
         let mut pmk_and_key_slots = None;
-        if bss.security_config != SecurityConfig::Open {
-            if let Some(credentials) = self.connection_parameters.credentials {
+        if bss.security_config != SecurityConfig::Open
+            && let Some(credentials) = self.connection_parameters.credentials {
                 let [gtk_key_slot, ptk_key_slot] = array::from_fn(|_| {
                     self.sta_tx_rx
                         .interface_control
@@ -597,7 +597,6 @@ impl<'foa, 'vif, 'params> ConnectionOperation<'foa, 'vif, 'params> {
                     return Err(StaError::InvalidPskLength);
                 }
             }
-        }
 
         // Configure the RX filters to the specified addresses, so that we actually receive frames
         // from the AP.

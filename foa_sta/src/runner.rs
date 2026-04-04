@@ -9,11 +9,8 @@ use embassy_net_driver_channel::{RxRunner, StateRunner, TxRunner};
 use embassy_time::Ticker;
 use ethernet::{Ethernet2Frame, Ethernet2Header};
 use foa::{
-    ReceivedFrame, RetryBehaviour, RxQueueReceiver,
-    esp_wifi_hal::{
-        ll::EdcaAccessCategory,
-        prelude::{RxFilterBank, TxMacParameters, TxPlcpParameters, WiFiRate},
-    },
+    ReceivedFrame, RetryBehaviour, RxEndpoint,
+    esp_wifi_hal::{ll::EdcaAccessCategory, prelude::*},
     util::{operations::deauthenticate, rx_router::RxRouterQueue},
 };
 use futures_util::FutureExt;
@@ -133,7 +130,7 @@ impl ConnectionRunner<'_, '_> {
                         bss.bssid,
                         *own_address,
                         true,
-                        WiFiRate::PhyRate1ML,
+                        OfdmRate::Mbits6.into(),
                     )
                     .await;
                     debug!("Disconnected from BSS due to beacon timeout.");
@@ -276,7 +273,7 @@ impl ConnectionRunner<'_, '_> {
 pub(crate) struct RoutingRunner<'foa, 'vif> {
     // Low level RX/TX.
     pub(crate) rx_router_input: StaRxRouterInput<'foa, 'vif>,
-    pub(crate) interface_rx_queue: &'vif RxQueueReceiver<'foa>,
+    pub(crate) interface_rx_endpoint: RxEndpoint<'foa, 'vif>,
     pub(crate) sta_tx_rx: &'vif StaTxRx<'foa, 'vif>,
 
     // Upper layer control.
@@ -377,7 +374,7 @@ impl RoutingRunner<'_, '_> {
     /// Run the routing task.
     async fn run(&mut self) -> ! {
         loop {
-            let borrowed_buffer = self.interface_rx_queue.receive().await;
+            let borrowed_buffer = self.interface_rx_endpoint.receive().await;
             // We create a generic frame, to do matching.
             let Ok(generic_frame) = GenericFrame::new(borrowed_buffer.mpdu_buffer(), false) else {
                 continue;

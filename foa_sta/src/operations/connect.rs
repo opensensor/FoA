@@ -1,10 +1,9 @@
-use core::{array, marker::PhantomData, mem};
+use core::{marker::PhantomData, mem};
 
 use embassy_futures::join::join;
 use embassy_time::WithTimeout;
-use esp_hal::rng::Rng;
 use foa::{
-    ReceivedFrame, RetryBehaviour, TxBuffer, TxReturnData,
+    ReceivedFrame, TxBuffer,
     esp_wifi_hal::{
         ll::EdcaAccessCategory,
         prelude::{RxFilterBank, TxMacParameters, TxPlcpParameters},
@@ -12,38 +11,23 @@ use foa::{
 };
 use ieee80211::{
     common::{
-        AssociationID, CapabilitiesInformation, DataFrameSubtype, FCFFlags,
-        IEEE80211AuthenticationAlgorithmNumber, IEEE80211StatusCode, SequenceControl,
+        AssociationID, CapabilitiesInformation, IEEE80211AuthenticationAlgorithmNumber,
+        IEEE80211StatusCode, SequenceControl,
     },
-    crypto::{
-        EapolSerdeError, derive_ptk, deserialize_eapol_data_frame,
-        eapol::{EapolKeyFrame, KeyDescriptorVersion, KeyInformation},
-        partition_ptk, serialize_eapol_data_frame,
-    },
-    data_frame::{DataFrame, header::DataFrameHeader},
     element_chain,
-    elements::{
-        SSIDElement,
-        kde::GtkKde,
-        rsn::{IEEE80211CipherSuiteSelector, RsnElement},
-    },
+    elements::{SSIDElement, rsn::RsnElement},
     mac_parser::MACAddress,
     mgmt_frame::{
         AssociationRequestFrame, AssociationResponseFrame, AuthenticationFrame,
         ManagementFrameHeader,
         body::{AssociationRequestBody, AuthenticationBody},
     },
-    scroll::{self, Pread, Pwrite, ctx::TryIntoCtx},
+    scroll::{Pread, Pwrite},
 };
-use llc_rs::{EtherType, SnapLlcFrame};
 
 use crate::{
-    ConnectionConfig, CryptoState, SecurityConfig, StaError, StaTxRx,
+    ConnectionConfig, SecurityConfig, StaError, StaTxRx,
     operations::{DEFAULT_SUPPORTED_RATES, DEFAULT_XRATES, scan::BSS},
-    rsn::{
-        Credentials, GTK_LENGTH, PMK_LENGTH, PTK_LENGTH, SecurityAssociations,
-        TransientKeySecurityAssociation, WPA2_PSK_AKM,
-    },
     rx_router::{StaRxRouterEndpoint, StaRxRouterOperation, StaRxRouterScopedOperation},
     util::HexWrapper,
 };
@@ -51,69 +35,352 @@ use crate::{
 pub struct ConnectionParameters<'a> {
     pub config: ConnectionConfig,
     pub own_address: MACAddress,
-    pub credentials: Option<Credentials<'a>>,
+    pub credentials: Option<crate::Credentials<'a>>,
 }
 
-/// Transmit an EAPOL key frame, with the specified parameters.
-pub(crate) async fn send_eapol_key_frame<
-    'a,
-    KeyMic: AsRef<[u8]>,
-    ElementContainer: TryIntoCtx<(), Error = scroll::Error>,
->(
-    sta_tx_rx: &StaTxRx<'_, '_>,
-    bssid: MACAddress,
-    own_address: MACAddress,
-    payload: EapolKeyFrame<'a, KeyMic, ElementContainer>,
-    kck: Option<&[u8; 16]>,
-    kek: Option<&[u8; 16]>,
-) -> Result<(), StaError> {
-    let data_frame = DataFrame {
-        header: DataFrameHeader {
-            subtype: DataFrameSubtype::Data,
-            fcf_flags: FCFFlags::new().with_to_ds(true),
-            address_1: bssid,
-            address_2: own_address,
-            address_3: bssid,
-            sequence_control: SequenceControl::new(),
-            ..Default::default()
-        },
-        payload: Some(SnapLlcFrame {
-            oui: [0u8; 3],
-            ether_type: EtherType::Eapol,
-            payload,
-            _phantom: PhantomData,
-        }),
-        _phantom: PhantomData,
-    };
-    let mut tx_buffer = sta_tx_rx.tx_endpoint.alloc_tx_buf().await;
-    let (buffer, temp_buffer) = tx_buffer.split_at_mut(500);
-    let written = serialize_eapol_data_frame(kck, kek, data_frame, buffer, temp_buffer).unwrap();
-    let res = sta_tx_rx
-        .tx_endpoint
-        .transmit_edca(
-            EdcaAccessCategory::default(),
-            tx_buffer,
-            written,
-            TxPlcpParameters {
-                rate: sta_tx_rx.phy_rate(),
-                ..Default::default()
-            },
-            TxMacParameters::default(),
-            RetryBehaviour::RetryUntil(7),
-        )
-        .wait_for_completion()
-        .await;
-    if matches!(res, Some(TxReturnData { result: Err(_), .. })) {
-        debug!("4WHS step timeout.");
-        Err(StaError::AckTimeout)
-    } else {
-        Ok(())
-    }
-}
 /// Connecting to an AP.
 struct ConnectionOperation<'foa, 'vif, 'params> {
     sta_tx_rx: &'params StaTxRx<'foa, 'vif>,
     connection_parameters: &'params ConnectionParameters<'params>,
+}
+#[cfg(feature = "rsn")]
+mod private {
+    use core::marker::PhantomData;
+
+    use foa::{
+        RetryBehaviour, TxBuffer, TxReturnData,
+        esp_wifi_hal::{
+            ll::EdcaAccessCategory,
+            prelude::{TxMacParameters, TxPlcpParameters},
+        },
+    };
+    use ieee80211::{
+        common::{DataFrameSubtype, FCFFlags, SequenceControl},
+        crypto::{
+            EapolSerdeError, derive_ptk, deserialize_eapol_data_frame,
+            eapol::{EapolKeyFrame, KeyDescriptorVersion, KeyInformation},
+            partition_ptk, serialize_eapol_data_frame,
+        },
+        data_frame::{DataFrame, header::DataFrameHeader},
+        element_chain,
+        elements::{
+            kde::GtkKde,
+            rsn::{IEEE80211CipherSuiteSelector, RsnElement},
+        },
+        mac_parser::MACAddress,
+        scroll::{self, ctx::TryIntoCtx},
+    };
+    use llc_rs::{EtherType, SnapLlcFrame};
+
+    use crate::{
+        BSS, StaError, StaTxRx,
+        rsn::{
+            GTK_LENGTH, PMK_LENGTH, PTK_LENGTH, SecurityAssociations,
+            TransientKeySecurityAssociation, WPA2_PSK_AKM,
+        },
+        rx_router::{StaRxRouterOperation, StaRxRouterScopedOperation},
+        util::HexWrapper,
+    };
+
+    impl<'foa, 'vif, 'params> super::ConnectionOperation<'foa, 'vif, 'params> {
+        /// Transmit an EAPOL key frame, with the specified parameters.
+        pub(crate) async fn send_eapol_key_frame<
+            'a,
+            KeyMic: AsRef<[u8]>,
+            ElementContainer: TryIntoCtx<(), Error = scroll::Error>,
+        >(
+            sta_tx_rx: &StaTxRx<'_, '_>,
+            bssid: MACAddress,
+            own_address: MACAddress,
+            payload: EapolKeyFrame<'a, KeyMic, ElementContainer>,
+            kck: Option<&[u8; 16]>,
+            kek: Option<&[u8; 16]>,
+        ) -> Result<(), StaError> {
+            let data_frame = DataFrame {
+                header: DataFrameHeader {
+                    subtype: DataFrameSubtype::Data,
+                    fcf_flags: FCFFlags::new().with_to_ds(true),
+                    address_1: bssid,
+                    address_2: own_address,
+                    address_3: bssid,
+                    sequence_control: SequenceControl::new(),
+                    ..Default::default()
+                },
+                payload: Some(SnapLlcFrame {
+                    oui: [0u8; 3],
+                    ether_type: EtherType::Eapol,
+                    payload,
+                    _phantom: PhantomData,
+                }),
+                _phantom: PhantomData,
+            };
+            let mut tx_buffer = sta_tx_rx.tx_endpoint.alloc_tx_buf().await;
+            let (buffer, temp_buffer) = tx_buffer.split_at_mut(500);
+            let written =
+                serialize_eapol_data_frame(kck, kek, data_frame, buffer, temp_buffer).unwrap();
+            let res = sta_tx_rx
+                .tx_endpoint
+                .transmit_edca(
+                    EdcaAccessCategory::default(),
+                    tx_buffer,
+                    written,
+                    TxPlcpParameters {
+                        rate: sta_tx_rx.phy_rate(),
+                        ..Default::default()
+                    },
+                    TxMacParameters::default(),
+                    RetryBehaviour::RetryUntil(7),
+                )
+                .wait_for_completion()
+                .await;
+            if matches!(res, Some(TxReturnData { result: Err(_), .. })) {
+                debug!("4WHS step timeout.");
+                Err(StaError::AckTimeout)
+            } else {
+                Ok(())
+            }
+        }
+        /// Wait for message 1 to arrive and process it accordingly.
+        async fn process_message_1(
+            router_operation: &StaRxRouterScopedOperation<'foa, 'vif, 'params>,
+            key_replay_counter: &mut u64,
+        ) -> [u8; 32] {
+            loop {
+                let mut frame = router_operation.receive().await;
+                let eapol_key_frame = match deserialize_eapol_data_frame(
+                    None,
+                    None,
+                    frame.mpdu_buffer_mut(),
+                    &mut [],
+                    WPA2_PSK_AKM,
+                    false,
+                ) {
+                    Ok(eapol_key_frame) => eapol_key_frame,
+                    Err(EapolSerdeError::InvalidMic) => {
+                        debug!("Message 1 MIC failure");
+                        continue;
+                    }
+                    Err(error) => {
+                        debug!(
+                            "Another error occured. Frame: {} EAPOL len: {} Error: {:?}",
+                            HexWrapper(frame.mpdu_buffer()),
+                            frame.mpdu_buffer().len() - 24 - 8,
+                            defmt_or_log::Debug2Format(&error)
+                        );
+                        continue;
+                    }
+                };
+                let key_information = eapol_key_frame.key_information;
+                if !(key_information.key_descriptor_version() == KeyDescriptorVersion::AesHmacSha1
+                    && key_information.is_pairwise()
+                    && key_information.key_ack())
+                {
+                    debug!("Key information didn't match message 1.");
+                    continue;
+                }
+                *key_replay_counter = eapol_key_frame.key_replay_counter;
+                break eapol_key_frame.key_nonce;
+            }
+        }
+        fn send_message_2(
+            &self,
+            bss: &'params BSS,
+            kck: &[u8; 16],
+            supplicant_nonce: &[u8; 32],
+            key_replay_counter: u64,
+        ) -> impl Future<Output = Result<(), StaError>> {
+            Self::send_eapol_key_frame(
+                self.sta_tx_rx,
+                bss.bssid,
+                self.connection_parameters.own_address,
+                EapolKeyFrame {
+                    key_information: KeyInformation::new()
+                        .with_is_pairwise(true)
+                        .with_key_mic(true)
+                        .with_key_descriptor_version(KeyDescriptorVersion::AesHmacSha1),
+                    key_length: 16,
+                    key_replay_counter,
+                    key_nonce: *supplicant_nonce,
+                    key_mic: [0x00u8; WPA2_PSK_AKM.key_mic_len().unwrap()].as_slice(),
+                    key_data: element_chain! {
+                        RsnElement::WPA2_PERSONAL
+                    },
+                    ..Default::default()
+                },
+                Some(kck),
+                None,
+            )
+        }
+        async fn process_message_3(
+            router_operation: &StaRxRouterScopedOperation<'foa, 'vif, 'params>,
+            mut scratch_buffer: TxBuffer<'_>,
+            kck: &[u8; 16],
+            kek: &[u8; 16],
+            key_replay_counter: &mut u64,
+        ) -> TransientKeySecurityAssociation<GTK_LENGTH, false> {
+            loop {
+                let mut frame = router_operation.receive().await;
+                let eapol_key_frame = match deserialize_eapol_data_frame(
+                    Some(kck),
+                    Some(kek),
+                    frame.mpdu_buffer_mut(),
+                    scratch_buffer.as_mut_slice(),
+                    WPA2_PSK_AKM,
+                    false,
+                ) {
+                    Ok(eapol_key_frame) => eapol_key_frame,
+                    Err(EapolSerdeError::InvalidMic) => {
+                        debug!("Message 3 MIC failure");
+                        continue;
+                    }
+                    Err(_) => {
+                        debug!(
+                            "Another error occured. Frame: {}",
+                            HexWrapper(frame.mpdu_buffer())
+                        );
+                        continue;
+                    }
+                };
+                let key_information = eapol_key_frame.key_information;
+                if !(key_information.key_descriptor_version() == KeyDescriptorVersion::AesHmacSha1
+                    && key_information.is_pairwise()
+                    && key_information.key_ack()
+                    && key_information.secure()
+                    && key_information.install()
+                    && key_information.key_mic()
+                    && key_information.encrypted_key_data())
+                {
+                    debug!("Key information didn't match message 3.");
+                    continue;
+                }
+                *key_replay_counter = eapol_key_frame.key_replay_counter;
+                let Some(gtk_kde) = eapol_key_frame.key_data.get_first_element::<GtkKde>() else {
+                    debug!(
+                        "No GTK KDE present. Key Data: {}",
+                        HexWrapper(eapol_key_frame.key_data.bytes)
+                    );
+                    continue;
+                };
+                break TransientKeySecurityAssociation::new(
+                    gtk_kde.gtk.try_into().unwrap(),
+                    gtk_kde.gtk_info.key_id(),
+                );
+            }
+        }
+        fn send_message_4(
+            &self,
+            bss: &'params BSS,
+            kck: &[u8; 16],
+            supplicant_nonce: &[u8; 32],
+            key_replay_counter: u64,
+        ) -> impl Future<Output = Result<(), StaError>> {
+            Self::send_eapol_key_frame(
+                self.sta_tx_rx,
+                bss.bssid,
+                self.connection_parameters.own_address,
+                EapolKeyFrame {
+                    key_information: KeyInformation::new()
+                        .with_is_pairwise(true)
+                        .with_key_mic(true)
+                        .with_secure(true)
+                        .with_key_descriptor_version(KeyDescriptorVersion::AesHmacSha1),
+                    key_length: 16,
+                    key_replay_counter,
+                    key_nonce: *supplicant_nonce,
+                    key_mic: [0x00u8; WPA2_PSK_AKM.key_mic_len().unwrap()].as_slice(),
+                    key_data: element_chain! {},
+                    ..Default::default()
+                },
+                Some(kck),
+                None,
+            )
+        }
+        pub(super) async fn do_4whs(
+            &self,
+            pmk: [u8; PMK_LENGTH],
+            router_operation: &mut StaRxRouterScopedOperation<'foa, 'vif, 'params>,
+            bss: &'params BSS,
+        ) -> Result<SecurityAssociations, StaError> {
+            use esp_hal::rng::Rng;
+
+            router_operation.transition(
+            StaRxRouterOperation::CryptoHandshake{
+                own_address: self.connection_parameters.own_address
+            })
+            .expect("This should not fail, since all three connecting operations have the same compatibility and there is no await point in the transition.");
+
+            let mut supplicant_nonce = [0u8; 32];
+            Rng::new().read(&mut supplicant_nonce);
+            debug!(
+                "Starting 4WHS. PMK: {}; SNonce: {}",
+                HexWrapper(&pmk),
+                HexWrapper(&supplicant_nonce)
+            );
+            let mut key_replay_counter = 0;
+
+            let authenticator_nonce =
+                Self::process_message_1(router_operation, &mut key_replay_counter).await;
+            debug!(
+                "Processed 4WHS message 1. ANonce: {}",
+                HexWrapper(&authenticator_nonce)
+            );
+
+            let mut ptk = TransientKeySecurityAssociation::new([0u8; PTK_LENGTH], 0);
+            derive_ptk(
+                &pmk,
+                &bss.bssid,
+                &self.connection_parameters.own_address,
+                &authenticator_nonce,
+                &supplicant_nonce,
+                &mut ptk.key,
+            );
+            let (kck, kek, tk) = partition_ptk(
+                &ptk.key,
+                WPA2_PSK_AKM,
+                IEEE80211CipherSuiteSelector::Ccmp128,
+            )
+            .unwrap();
+            let (kck, kek): ([u8; 16], [u8; 16]) =
+                (kck.try_into().unwrap(), kek.try_into().unwrap());
+            debug!(
+                "Derived PTK. KCK: {} KEK: {}, TK: {}",
+                HexWrapper(&kck),
+                HexWrapper(&kek),
+                HexWrapper(tk)
+            );
+            self.send_message_2(bss, &kck, &supplicant_nonce, key_replay_counter)
+                .await?;
+            debug!("Sent 4WHS message 2.");
+
+            // We abuse a TX buffer as a general purpose buffer here.
+            let scratch_buffer = self.sta_tx_rx.tx_endpoint.alloc_tx_buf().await;
+
+            let gtk = Self::process_message_3(
+                router_operation,
+                scratch_buffer,
+                &kck,
+                &kek,
+                &mut key_replay_counter,
+            )
+            .await;
+            debug!(
+                "Processed 4WHS message 3. GTK: {} GTK Key ID: {}",
+                HexWrapper(&gtk.key),
+                gtk.key_id
+            );
+
+            self.send_message_4(bss, &kck, &supplicant_nonce, key_replay_counter)
+                .await?;
+            debug!("Sent 4WHS message 4.");
+
+            Ok(SecurityAssociations {
+                ptksa: ptk,
+                gtksa: gtk,
+                akm_suite: WPA2_PSK_AKM,
+                cipher_suite: IEEE80211CipherSuiteSelector::Ccmp128,
+            })
+        }
+    }
 }
 impl<'foa, 'vif, 'params> ConnectionOperation<'foa, 'vif, 'params> {
     fn complete(self) {
@@ -297,243 +564,6 @@ impl<'foa, 'vif, 'params> ConnectionOperation<'foa, 'vif, 'params> {
         debug!("Assoc frame: {}", HexWrapper(response.mpdu_buffer()));
         Err(StaError::AssociationFailure(assoc_response.status_code))
     }
-    /// Wait for message 1 to arrive and process it accordingly.
-    async fn process_message_1(
-        router_operation: &StaRxRouterScopedOperation<'foa, 'vif, 'params>,
-        key_replay_counter: &mut u64,
-    ) -> [u8; 32] {
-        loop {
-            let mut frame = router_operation.receive().await;
-            let eapol_key_frame = match deserialize_eapol_data_frame(
-                None,
-                None,
-                frame.mpdu_buffer_mut(),
-                &mut [],
-                WPA2_PSK_AKM,
-                false,
-            ) {
-                Ok(eapol_key_frame) => eapol_key_frame,
-                Err(EapolSerdeError::InvalidMic) => {
-                    debug!("Message 1 MIC failure");
-                    continue;
-                }
-                Err(error) => {
-                    debug!(
-                        "Another error occured. Frame: {} EAPOL len: {} Error: {:?}",
-                        HexWrapper(frame.mpdu_buffer()),
-                        frame.mpdu_buffer().len() - 24 - 8,
-                        defmt_or_log::Debug2Format(&error)
-                    );
-                    continue;
-                }
-            };
-            let key_information = eapol_key_frame.key_information;
-            if !(key_information.key_descriptor_version() == KeyDescriptorVersion::AesHmacSha1
-                && key_information.is_pairwise()
-                && key_information.key_ack())
-            {
-                debug!("Key information didn't match message 1.");
-                continue;
-            }
-            *key_replay_counter = eapol_key_frame.key_replay_counter;
-            break eapol_key_frame.key_nonce;
-        }
-    }
-    fn send_message_2(
-        &self,
-        bss: &'params BSS,
-        kck: &[u8; 16],
-        supplicant_nonce: &[u8; 32],
-        key_replay_counter: u64,
-    ) -> impl Future<Output = Result<(), StaError>> {
-        send_eapol_key_frame(
-            self.sta_tx_rx,
-            bss.bssid,
-            self.connection_parameters.own_address,
-            EapolKeyFrame {
-                key_information: KeyInformation::new()
-                    .with_is_pairwise(true)
-                    .with_key_mic(true)
-                    .with_key_descriptor_version(KeyDescriptorVersion::AesHmacSha1),
-                key_length: 16,
-                key_replay_counter,
-                key_nonce: *supplicant_nonce,
-                key_mic: [0x00u8; WPA2_PSK_AKM.key_mic_len().unwrap()].as_slice(),
-                key_data: element_chain! {
-                    RsnElement::WPA2_PERSONAL
-                },
-                ..Default::default()
-            },
-            Some(kck),
-            None,
-        )
-    }
-    async fn process_message_3(
-        router_operation: &StaRxRouterScopedOperation<'foa, 'vif, 'params>,
-        mut scratch_buffer: TxBuffer<'_>,
-        kck: &[u8; 16],
-        kek: &[u8; 16],
-        key_replay_counter: &mut u64,
-    ) -> TransientKeySecurityAssociation<GTK_LENGTH, false> {
-        loop {
-            let mut frame = router_operation.receive().await;
-            let eapol_key_frame = match deserialize_eapol_data_frame(
-                Some(kck),
-                Some(kek),
-                frame.mpdu_buffer_mut(),
-                scratch_buffer.as_mut_slice(),
-                WPA2_PSK_AKM,
-                false,
-            ) {
-                Ok(eapol_key_frame) => eapol_key_frame,
-                Err(EapolSerdeError::InvalidMic) => {
-                    debug!("Message 3 MIC failure");
-                    continue;
-                }
-                Err(_) => {
-                    debug!(
-                        "Another error occured. Frame: {}",
-                        HexWrapper(frame.mpdu_buffer())
-                    );
-                    continue;
-                }
-            };
-            let key_information = eapol_key_frame.key_information;
-            if !(key_information.key_descriptor_version() == KeyDescriptorVersion::AesHmacSha1
-                && key_information.is_pairwise()
-                && key_information.key_ack()
-                && key_information.secure()
-                && key_information.install()
-                && key_information.key_mic()
-                && key_information.encrypted_key_data())
-            {
-                debug!("Key information didn't match message 3.");
-                continue;
-            }
-            *key_replay_counter = eapol_key_frame.key_replay_counter;
-            let Some(gtk_kde) = eapol_key_frame.key_data.get_first_element::<GtkKde>() else {
-                debug!(
-                    "No GTK KDE present. Key Data: {}",
-                    HexWrapper(eapol_key_frame.key_data.bytes)
-                );
-                continue;
-            };
-            break TransientKeySecurityAssociation::new(
-                gtk_kde.gtk.try_into().unwrap(),
-                gtk_kde.gtk_info.key_id(),
-            );
-        }
-    }
-    fn send_message_4(
-        &self,
-        bss: &'params BSS,
-        kck: &[u8; 16],
-        supplicant_nonce: &[u8; 32],
-        key_replay_counter: u64,
-    ) -> impl Future<Output = Result<(), StaError>> {
-        send_eapol_key_frame(
-            self.sta_tx_rx,
-            bss.bssid,
-            self.connection_parameters.own_address,
-            EapolKeyFrame {
-                key_information: KeyInformation::new()
-                    .with_is_pairwise(true)
-                    .with_key_mic(true)
-                    .with_secure(true)
-                    .with_key_descriptor_version(KeyDescriptorVersion::AesHmacSha1),
-                key_length: 16,
-                key_replay_counter,
-                key_nonce: *supplicant_nonce,
-                key_mic: [0x00u8; WPA2_PSK_AKM.key_mic_len().unwrap()].as_slice(),
-                key_data: element_chain! {},
-                ..Default::default()
-            },
-            Some(kck),
-            None,
-        )
-    }
-    async fn do_4whs(
-        &self,
-        pmk: [u8; PMK_LENGTH],
-        router_operation: &mut StaRxRouterScopedOperation<'foa, 'vif, 'params>,
-        bss: &'params BSS,
-    ) -> Result<SecurityAssociations, StaError> {
-        router_operation.transition(
-            StaRxRouterOperation::CryptoHandshake{
-                own_address: self.connection_parameters.own_address
-            })
-            .expect("This should not fail, since all three connecting operations have the same compatibility and there is no await point in the transition.");
-
-        let mut supplicant_nonce = [0u8; 32];
-        Rng::new().read(&mut supplicant_nonce);
-        debug!(
-            "Starting 4WHS. PMK: {}; SNonce: {}",
-            HexWrapper(&pmk),
-            HexWrapper(&supplicant_nonce)
-        );
-        let mut key_replay_counter = 0;
-
-        let authenticator_nonce =
-            Self::process_message_1(router_operation, &mut key_replay_counter).await;
-        debug!(
-            "Processed 4WHS message 1. ANonce: {}",
-            HexWrapper(&authenticator_nonce)
-        );
-
-        let mut ptk = TransientKeySecurityAssociation::new([0u8; PTK_LENGTH], 0);
-        derive_ptk(
-            &pmk,
-            &bss.bssid,
-            &self.connection_parameters.own_address,
-            &authenticator_nonce,
-            &supplicant_nonce,
-            &mut ptk.key,
-        );
-        let (kck, kek, tk) = partition_ptk(
-            &ptk.key,
-            WPA2_PSK_AKM,
-            IEEE80211CipherSuiteSelector::Ccmp128,
-        )
-        .unwrap();
-        let (kck, kek): ([u8; 16], [u8; 16]) = (kck.try_into().unwrap(), kek.try_into().unwrap());
-        debug!(
-            "Derived PTK. KCK: {} KEK: {}, TK: {}",
-            HexWrapper(&kck),
-            HexWrapper(&kek),
-            HexWrapper(tk)
-        );
-        self.send_message_2(bss, &kck, &supplicant_nonce, key_replay_counter)
-            .await?;
-        debug!("Sent 4WHS message 2.");
-
-        // We abuse a TX buffer as a general purpose buffer here.
-        let scratch_buffer = self.sta_tx_rx.tx_endpoint.alloc_tx_buf().await;
-
-        let gtk = Self::process_message_3(
-            router_operation,
-            scratch_buffer,
-            &kck,
-            &kek,
-            &mut key_replay_counter,
-        )
-        .await;
-        debug!(
-            "Processed 4WHS message 3. GTK: {} GTK Key ID: {}",
-            HexWrapper(&gtk.key),
-            gtk.key_id
-        );
-
-        self.send_message_4(bss, &kck, &supplicant_nonce, key_replay_counter)
-            .await?;
-        debug!("Sent 4WHS message 4.");
-
-        Ok(SecurityAssociations {
-            ptksa: ptk,
-            gtksa: gtk,
-            akm_suite: WPA2_PSK_AKM,
-            cipher_suite: IEEE80211CipherSuiteSelector::Ccmp128,
-        })
-    }
     fn configure_rx_filters(&self, bss: &BSS) {
         // Here we set and enable the BSSID and RA filters.
 
@@ -575,28 +605,26 @@ impl<'foa, 'vif, 'params> ConnectionOperation<'foa, 'vif, 'params> {
                 .wait_for_off_channel_completion(),
         )
         .await;
-        let mut pmk_and_key_slots = None;
-        if bss.security_config != SecurityConfig::Open
-            && let Some(credentials) = self.connection_parameters.credentials {
-                let [gtk_key_slot, ptk_key_slot] = array::from_fn(|_| {
-                    self.sta_tx_rx
-                        .interface_control
-                        .acquire_key_slot()
-                        .ok_or(StaError::NoKeySlotsAvailable)
-                });
-                if credentials
-                    .pmk(
-                        &mut pmk_and_key_slots
-                            .insert(([0u8; PMK_LENGTH], gtk_key_slot?, ptk_key_slot?))
-                            .0,
-                        bss.ssid.as_str(),
-                    )
-                    .is_err()
-                {
-                    debug!("Invalid PSK length.");
-                    return Err(StaError::InvalidPskLength);
-                }
+
+        #[cfg(feature = "rsn")]
+        let pmk_and_key_slots = if bss.security_config != SecurityConfig::Open
+            && let Some(credentials) = self.connection_parameters.credentials
+        {
+            let [gtk_key_slot, ptk_key_slot] = core::array::from_fn(|_| {
+                self.sta_tx_rx
+                    .interface_control
+                    .acquire_key_slot()
+                    .ok_or(StaError::NoKeySlotsAvailable)
+            });
+            let mut pmk = [0u8; crate::rsn::PMK_LENGTH];
+            if credentials.pmk(&mut pmk, bss.ssid.as_str()).is_err() {
+                debug!("Invalid PSK length.");
+                return Err(StaError::InvalidPskLength);
             }
+            Some((pmk, gtk_key_slot?, ptk_key_slot?))
+        } else {
+            None
+        };
 
         // Configure the RX filters to the specified addresses, so that we actually receive frames
         // from the AP.
@@ -608,10 +636,11 @@ impl<'foa, 'vif, 'params> ConnectionOperation<'foa, 'vif, 'params> {
         // Try to associate with the AP.
         let aid = self.do_assoc(&mut router_operation, bss).await?;
 
+        #[cfg(feature = "rsn")]
         if let Some((pmk, gtk_key_slot, ptk_key_slot)) = pmk_and_key_slots {
             let crypto_keys = self.do_4whs(pmk, &mut router_operation, bss).await?;
             self.sta_tx_rx.crypto_state.lock(|rc| {
-                let _ = rc.borrow_mut().insert(CryptoState::new(
+                let _ = rc.borrow_mut().insert(crate::rsn::CryptoState::new(
                     gtk_key_slot,
                     ptk_key_slot,
                     *bss.bssid,

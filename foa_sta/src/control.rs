@@ -13,12 +13,12 @@ use foa::{
 
 use crate::{
     ConnectionConfig, SecurityConfig, StaTxRx,
+    bss::{BSS, Credentials},
     connection_state::{ConnectionInfo, ConnectionState, DisconnectionReason},
     operations::{
         connect::{self, ConnectionParameters},
-        scan::{BSS, enumerate_bss, search_for_bss},
+        scan::{enumerate_bss, search_for_bss},
     },
-    rsn::Credentials,
     rx_router::StaRxRouterEndpoint,
 };
 

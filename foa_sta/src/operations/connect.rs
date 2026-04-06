@@ -27,7 +27,8 @@ use ieee80211::{
 
 use crate::{
     ConnectionConfig, SecurityConfig, StaError, StaTxRx,
-    operations::{DEFAULT_SUPPORTED_RATES, DEFAULT_XRATES, scan::BSS},
+    bss::BSS,
+    operations::{DEFAULT_SUPPORTED_RATES, DEFAULT_XRATES},
     rx_router::{StaRxRouterEndpoint, StaRxRouterOperation, StaRxRouterScopedOperation},
     util::HexWrapper,
 };
@@ -35,6 +36,7 @@ use crate::{
 pub struct ConnectionParameters<'a> {
     pub config: ConnectionConfig,
     pub own_address: MACAddress,
+    #[allow(unused)]
     pub credentials: Option<crate::Credentials<'a>>,
 }
 

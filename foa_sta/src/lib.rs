@@ -31,13 +31,15 @@
 //! (Frostie314159): The reason this will take a while is, because I worked on WPA2 for two months
 //! straight to get it working and sorta need to take my mind of it for a while.
 
-use core::cell::{Cell, RefCell};
+use core::cell::Cell;
 
 use connection_state::ConnectionStateTracker;
 use embassy_net_driver::HardwareAddress;
-use embassy_sync::blocking_mutex::NoopMutex;
 use esp_config::esp_config_int;
 use ieee80211::{common::IEEE80211StatusCode, mac_parser::MACAddress};
+
+#[cfg(feature = "rsn")]
+use {core::cell::RefCell, embassy_sync::blocking_mutex::NoopMutex};
 
 use embassy_net_driver_channel::{self as ch};
 use foa::{
@@ -50,10 +52,10 @@ extern crate defmt_or_log;
 
 mod control;
 pub use control::*;
-pub use operations::scan::BSS;
 
+mod bss;
+pub use bss::*;
 mod runner;
-use rsn::CryptoState;
 pub use runner::StaRunner;
 use runner::{ConnectionRunner, RoutingRunner};
 mod operations;
@@ -61,8 +63,8 @@ mod rx_router;
 use rx_router::StaRxRouter;
 mod connection_state;
 pub use connection_state::ConnectionConfig;
+#[cfg(feature = "rsn")]
 mod rsn;
-pub use rsn::{Credentials, SecurityConfig};
 mod util;
 
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -113,7 +115,8 @@ pub(crate) struct StaTxRx<'foa, 'vif> {
     pub(crate) interface_control: &'vif LMacInterfaceControl<'foa>,
     pub(crate) connection_state: &'vif ConnectionStateTracker,
     pub(crate) tx_endpoint: &'vif TxEndpoint<'foa>,
-    pub(crate) crypto_state: &'vif NoopMutex<RefCell<Option<CryptoState<'foa>>>>,
+    #[cfg(feature = "rsn")]
+    pub(crate) crypto_state: &'vif NoopMutex<RefCell<Option<crate::rsn::CryptoState<'foa>>>>,
     phy_rate: &'vif Cell<TxPhyRate>,
 }
 impl StaTxRx<'_, '_> {
@@ -134,11 +137,15 @@ impl StaTxRx<'_, '_> {
         self.interface_control.off_channel_operation_interface()
             == Some(self.interface_control.interface())
     }
-    pub fn map_crypto_state<O, F: FnMut(&mut CryptoState<'_>) -> O>(&self, f: F) -> Option<O> {
+    #[cfg(feature = "rsn")]
+    pub fn map_crypto_state<O, F: FnMut(&mut rsn::CryptoState<'_>) -> O>(&self, f: F) -> Option<O> {
         self.crypto_state.lock(|cs| cs.borrow_mut().as_mut().map(f))
     }
     pub fn rsna_activated(&self) -> bool {
-        self.map_crypto_state(|_| {}).is_some()
+        #[cfg(feature = "rsn")]
+        return self.map_crypto_state(|_| {}).is_some();
+        #[cfg(not(feature = "rsn"))]
+        return false;
     }
 }
 
@@ -159,7 +166,8 @@ pub struct StaResources<'foa> {
 
     // Misc.
     sta_tx_rx: Option<StaTxRx<'static, 'static>>,
-    crypto_state: NoopMutex<RefCell<Option<CryptoState<'foa>>>>,
+    #[cfg(feature = "rsn")]
+    crypto_state: NoopMutex<RefCell<Option<crate::rsn::CryptoState<'foa>>>>,
 }
 impl StaResources<'_> {
     /// Create new resources for the STA interface.
@@ -170,6 +178,7 @@ impl StaResources<'_> {
             connection_state: ConnectionStateTracker::new(),
             phy_rate: Cell::new(TxPhyRate::Ofdm(OfdmRate::Mbits6)),
             sta_tx_rx: None,
+            #[cfg(feature = "rsn")]
             crypto_state: NoopMutex::new(RefCell::new(None)),
         }
     }
@@ -213,6 +222,7 @@ pub fn new_sta_interface<'foa: 'vif, 'vif>(
         interface_control,
         connection_state: &resources.connection_state,
         tx_endpoint,
+        #[cfg(feature = "rsn")]
         crypto_state: &resources.crypto_state,
         phy_rate: &resources.phy_rate,
     });

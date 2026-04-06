@@ -4,7 +4,7 @@ options:
   - name: rx_buffer_count
     description: Amount of RX buffers
     default: 
-      - value: 10
+      - value: 8
     constraints:
       - type:
           validator: positive_integer
@@ -18,7 +18,7 @@ options:
   - name: tx_buffer_count
     description: Amount of TX buffers
     default: 
-      - value: 10
+      - value: 8
     constraints:
       - type:
           validator: positive_integer

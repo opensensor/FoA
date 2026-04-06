@@ -32,7 +32,7 @@ embassy-net-driver = "0.2.0"
 esp-config = { version = "0.6.1", features = ["build"] }
 
 [features]
-default = ["wpa2"]
+default = []
 rsn = ["ieee80211/crypto"]
 wpa2 = ["rsn"]
 

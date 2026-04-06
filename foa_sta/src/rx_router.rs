@@ -10,6 +10,7 @@ use ieee80211::{
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(unused)]
 /// Operations used by the STA interface.
 pub enum StaRxRouterOperation {
     /// Authenticating with a network.

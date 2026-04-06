@@ -7,7 +7,7 @@ use embassy_sync::{
 use embassy_time::Duration;
 use ieee80211::{common::AssociationID, mac_parser::MACAddress};
 
-use crate::BSS;
+use crate::bss::BSS;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 /// Configuration parameters for the connection.

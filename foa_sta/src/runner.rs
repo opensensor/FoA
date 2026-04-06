@@ -177,6 +177,8 @@ impl ConnectionRunner<'_, '_> {
                 }),
                 _phantom: PhantomData,
             };
+
+            #[cfg(feature = "rsn")]
             let tx_crypto_info = sta_tx_rx.map_crypto_state(|crypto_state| {
                 (
                     crypto_state
@@ -187,6 +189,9 @@ impl ConnectionRunner<'_, '_> {
                     crypto_state.ptk_key_slot.key_slot(),
                 )
             });
+
+            #[cfg(not(feature = "rsn"))]
+            let tx_crypto_info = None::<(u64, u8, u8)>;
             let Some((written, key_slot)) =
                 (if let Some((new_packet_number, key_id, key_slot)) = tx_crypto_info {
                     tx_buf
@@ -280,31 +285,37 @@ pub(crate) struct RoutingRunner<'foa, 'vif> {
     pub(crate) rx_runner: RxRunner<'vif, MTU>,
 }
 impl RoutingRunner<'_, '_> {
+    #[allow(unused)]
     fn process_potentially_wrapped_payload<'a>(
         &self,
         is_group: bool,
         payload: PotentiallyWrappedPayload<DataFrameReadPayload<'a>>,
     ) -> Option<DataFrameReadPayload<'a>> {
-        Some(match payload {
-            PotentiallyWrappedPayload::Unwrapped(payload) => payload,
-            PotentiallyWrappedPayload::CryptoWrapped(crypto_wrapper) => self
-                .sta_tx_rx
-                .map_crypto_state(|crypto_state| {
-                    let security_associations = &crypto_state.security_associations;
-                    let packet_number = crypto_wrapper.crypto_header.packet_number();
-                    let packet_number_valid = if is_group {
-                        security_associations
-                            .gtksa
-                            .update_and_validate_replay_counter(packet_number)
-                    } else {
-                        security_associations
-                            .ptksa
-                            .update_and_validate_replay_counter(packet_number)
-                    };
-                    packet_number_valid.then_some(crypto_wrapper.payload)
-                })
-                .flatten()?,
-        })
+        match payload {
+            PotentiallyWrappedPayload::Unwrapped(payload) => Some(payload),
+            PotentiallyWrappedPayload::CryptoWrapped(crypto_wrapper) => {
+                #[cfg(feature = "rsn")]
+                return self
+                    .sta_tx_rx
+                    .map_crypto_state(|crypto_state| {
+                        let security_associations = &crypto_state.security_associations;
+                        let packet_number = crypto_wrapper.crypto_header.packet_number();
+                        let packet_number_valid = if is_group {
+                            security_associations
+                                .gtksa
+                                .update_and_validate_replay_counter(packet_number)
+                        } else {
+                            security_associations
+                                .ptksa
+                                .update_and_validate_replay_counter(packet_number)
+                        };
+                        packet_number_valid.then_some(crypto_wrapper.payload)
+                    })
+                    .flatten();
+                #[cfg(not(feature = "rsn"))]
+                return None;
+            }
+        }
     }
     /// Handover a single MSDU to embassy_net.
     fn handle_downlink_msdu(

@@ -37,6 +37,7 @@ enum ConnectionRxEvent {
     Disconnected(DisconnectionReason),
     BeaconReceived,
 }
+
 pub(crate) struct ConnectionRunner<'foa, 'vif> {
     // Low level RX/TX.
     pub(crate) rx_router_endpoint: StaRxRouterEndpoint<'foa, 'vif>,

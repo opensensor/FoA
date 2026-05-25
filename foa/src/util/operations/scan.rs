@@ -80,6 +80,7 @@ pub async fn scan<'foa, 'vif, 'params, Operation: HasScanOperation, Res>(
     rx_router_endpoint: &'params mut RxRouterEndpoint<'foa, 'vif, Operation>,
     mut rx_cb: impl FnMut(BeaconFrame<'_>, &ReceivedFrame<'foa>, u8) -> PostChannelScanAction<Res>,
     scan_config: Option<ScanConfig<'_>>,
+    continuous: bool,
 ) -> Result<Option<Res>, LMacError> {
     // We begin the off channel operation.
     let mut off_channel_operation = interface_control
@@ -107,15 +108,20 @@ pub async fn scan<'foa, 'vif, 'params, Operation: HasScanOperation, Res>(
 
     let mut res = None;
 
-    // Loop through channels.
-    for channel in channels {
-        off_channel_operation.set_channel(*channel)?;
-        let post_channel_scan_action = scan_on_channel(&router_operation, *channel, &mut rx_cb)
-            .with_timeout(scan_config.channel_remain_time)
-            .await
-            .unwrap_or(PostChannelScanAction::Continue);
-        if let PostChannelScanAction::Stop(scan_res) = post_channel_scan_action {
-            res = Some(scan_res);
+    loop {
+        // Loop through channels.
+        for channel in channels {
+            off_channel_operation.set_channel(*channel)?;
+            let post_channel_scan_action = scan_on_channel(&router_operation, *channel, &mut rx_cb)
+                .with_timeout(scan_config.channel_remain_time)
+                .await
+                .unwrap_or(PostChannelScanAction::Continue);
+            if let PostChannelScanAction::Stop(scan_res) = post_channel_scan_action {
+                res = Some(scan_res);
+                break;
+            }
+        }
+        if !continuous {
             break;
         }
     }

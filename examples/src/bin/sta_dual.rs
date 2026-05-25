@@ -12,10 +12,7 @@ use embassy_net::{
 };
 use embassy_time::Timer;
 
-use esp_alloc::heap_allocator;
-use esp_backtrace as _;
 use esp_hal::timer::timg::TimerGroup;
-use esp_println as _;
 
 use examples::get_credentials;
 use foa::{FoAResources, FoARunner};
@@ -89,8 +86,8 @@ async fn main(spawner: Spawner) {
     let peripherals =
         esp_hal::init(esp_hal::Config::default().with_cpu_clock(esp_hal::clock::CpuClock::_240MHz));
 
-    heap_allocator!(size: 100 * 1024);
     info!("Initialized FoA with two interfaces.");
+    examples::init();
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     esp_rtos::start(timg0.timer0);

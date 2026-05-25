@@ -47,6 +47,9 @@ use foa::{
     util::rx_router::RxRouter,
 };
 
+#[cfg(feature = "alloc")]
+extern crate alloc;
+
 #[macro_use]
 extern crate defmt_or_log;
 

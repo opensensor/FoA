@@ -1,35 +1,8 @@
-use esp_config::{generate_config, ConfigOption, Validator, Value};
+use esp_config::generate_config_from_yaml_definition;
+
 
 fn main() {
-    generate_config(
-        "foa_awdl",
-        &[
-            ConfigOption::new(
-                "PEER_CACHE_SIZE",
-                "Maximum number of peers in the cache.",
-                Value::Integer(4),
-            )
-            .constraint(Validator::PositiveInteger),
-            ConfigOption::new(
-                "NET_TX_BUFFERS",
-                "The amount of TX buffers used for embassy_net_driver_channel.",
-                Value::Integer(4),
-            )
-            .constraint(Validator::PositiveInteger),
-            ConfigOption::new(
-                "NET_RX_BUFFERS",
-                "The amount of RX buffers used for embassy_net_driver_channel.",
-                Value::Integer(4),
-            )
-            .constraint(Validator::PositiveInteger),
-            ConfigOption::new(
-                "EVENT_QUEUE_DEPTH",
-                "The maximum number of events, that the event queue can hold",
-                Value::Integer(4),
-            )
-            .constraint(Validator::PositiveInteger),
-        ],
-        false,
-        true,
-    );
+    println!("cargo:rerun-if-changed=./foa_awdl_config.yml");
+    let cfg_yaml = std::fs::read_to_string("./foa_awdl_config.yml").unwrap();
+    let _ = generate_config_from_yaml_definition(&cfg_yaml, true, true, None).unwrap();
 }

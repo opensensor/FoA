@@ -13,9 +13,7 @@ use embassy_net::{
 };
 use embassy_time::Timer;
 use esp_alloc::heap_allocator;
-use esp_backtrace as _;
-use esp_hal::timer::timg::TimerGroup;
-use esp_println as _;
+use esp_hal::{interrupt::software::SoftwareInterruptControl, timer::timg::TimerGroup};
 use examples::mk_static;
 use foa::{FoAResources, FoARunner, VirtualInterface};
 use foa_awdl::{AwdlEvent, AwdlNetDevice, AwdlResources, AwdlRunner};
@@ -40,11 +38,12 @@ async fn main(spawner: Spawner) {
     let peripherals = esp_hal::init(esp_hal::Config::default());
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
-    esp_rtos::start(timg0.timer0);
+    let sw_interrupt = SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
+    esp_rtos::start(timg0.timer0, sw_interrupt.software_interrupt0);
 
     let stack_resources = mk_static!(FoAResources, FoAResources::new());
     let ([awdl_vif, ..], foa_runner) = foa::init(stack_resources, peripherals.WIFI);
-    spawner.spawn(foa_task(foa_runner)).unwrap();
+    spawner.spawn(foa_task(foa_runner).unwrap());
 
     let awdl_resources = mk_static!(AwdlResources, AwdlResources::new());
     let (mut awdl_control, awdl_runner, net_device, awdl_event_queue_rx) =
@@ -52,7 +51,7 @@ async fn main(spawner: Spawner) {
             mk_static!(VirtualInterface<'static>, awdl_vif),
             awdl_resources,
         );
-    spawner.spawn(awdl_task(awdl_runner)).unwrap();
+    spawner.spawn(awdl_task(awdl_runner).unwrap());
     awdl_control.randomize_mac_address();
     awdl_control.start().await.unwrap();
 
@@ -77,7 +76,7 @@ async fn main(spawner: Spawner) {
         net_stack_resources,
         1234,
     );
-    spawner.spawn(net_task(net_runner)).unwrap();
+    spawner.spawn(net_task(net_runner).unwrap());
     let tcp_client_state = mk_static!(TcpClientState<2, 1400, 1400>, TcpClientState::new());
     let tcp_client = TcpClient::new(net_stack, tcp_client_state);
     /*

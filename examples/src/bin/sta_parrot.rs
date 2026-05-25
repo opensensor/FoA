@@ -11,14 +11,13 @@ use embassy_net::{
 };
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embedded_io_async::Read;
-use esp_backtrace as _;
 use esp_hal::{
     Async,
     clock::CpuClock,
+    interrupt::software::SoftwareInterruptControl,
     timer::timg::TimerGroup,
     uart::{self, Uart},
 };
-use esp_println as _;
 use examples::{get_credentials, mk_static};
 use foa::{FoAResources, FoARunner, VirtualInterface};
 use foa_sta::{StaNetDevice, StaResources, StaRunner};
@@ -40,22 +39,22 @@ async fn net_task(mut net_runner: NetRunner<'static, StaNetDevice<'static>>) -> 
 }
 #[esp_rtos::main]
 async fn main(spawner: Spawner) {
-    esp_bootloader_esp_idf::esp_app_desc!();
     let peripherals = esp_hal::init(esp_hal::Config::default().with_cpu_clock(CpuClock::max()));
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
-    esp_rtos::start(timg0.timer0);
+    let sw_interrupt = SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
+    esp_rtos::start(timg0.timer0, sw_interrupt.software_interrupt0);
 
     let stack_resources = mk_static!(FoAResources, FoAResources::new());
     let ([sta_vif, ..], foa_runner) = foa::init(stack_resources, peripherals.WIFI);
-    spawner.must_spawn(foa_task(foa_runner));
+    spawner.spawn(foa_task(foa_runner).unwrap());
 
     let sta_resources = mk_static!(StaResources<'static>, StaResources::default());
     let (mut sta_control, sta_runner, net_device) = foa_sta::new_sta_interface(
         mk_static!(VirtualInterface<'static>, sta_vif),
         sta_resources,
     );
-    spawner.must_spawn(sta_task(sta_runner));
+    spawner.spawn(sta_task(sta_runner).unwrap());
 
     let _ = sta_control.randomize_mac_address();
 
@@ -66,7 +65,7 @@ async fn main(spawner: Spawner) {
         net_stack_resources,
         1234,
     );
-    spawner.spawn(net_task(net_runner)).unwrap();
+    spawner.spawn(net_task(net_runner).unwrap());
 
     defmt::unwrap!(
         sta_control

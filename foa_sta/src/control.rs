@@ -17,7 +17,7 @@ use crate::{
     connection_state::{ConnectionInfo, ConnectionState, DisconnectionReason},
     operations::{
         connect::{self, ConnectionParameters},
-        scan::{enumerate_bss, search_for_bss},
+        scan::{self},
     },
     rx_router::StaRxRouterEndpoint,
 };
@@ -54,16 +54,34 @@ impl<'foa, 'vif> StaControl<'foa, 'vif> {
     /// Scan for networks.
     ///
     /// Invalid channels will cause an error to be returned.
-    pub fn scan<'a, const MAX_ESS: usize>(
-        &'a mut self,
-        scan_config: Option<ScanConfig<'a>>,
-        found_bss: &'a mut FnvIndexMap<[u8; 6], BSS, MAX_ESS>,
+    pub fn scan<'params, const MAX_ESS: usize>(
+        &'params mut self,
+        scan_config: Option<ScanConfig<'params>>,
+        found_bss: &'params mut FnvIndexMap<[u8; 6], BSS, MAX_ESS>,
     ) -> impl Future<Output = Result<(), StaError>> {
-        enumerate_bss(
+        scan::enumerate_bss(
             self.sta_tx_rx,
             &mut self.rx_router_endpoint,
             scan_config,
             found_bss,
+        )
+    }
+    #[cfg(feature = "alloc")]
+    /// Scan continuously for networks and run the call back whenever one is found.
+    ///
+    /// When the callback returns false the scan will be stopped and the future finishes.
+    pub fn scan_continuously<'params>(
+        &'params mut self,
+        scan_config: Option<ScanConfig<'params>>,
+        found_bss: &'params mut alloc::collections::BTreeMap<[u8; 6], BSS>,
+        bss_found_cb: fn(&BSS) -> bool,
+    ) -> impl Future<Output = Result<(), StaError>> + use<'foa, 'vif, 'params> {
+        scan::scan_continuously(
+            self.sta_tx_rx,
+            &mut self.rx_router_endpoint,
+            scan_config,
+            found_bss,
+            bss_found_cb,
         )
     }
     /// Look for a specific ESS and break once the first match is found.
@@ -72,7 +90,7 @@ impl<'foa, 'vif> StaControl<'foa, 'vif> {
         scan_config: Option<ScanConfig<'params>>,
         ssid: &'params str,
     ) -> impl Future<Output = Result<BSS, StaError>> + use<'foa, 'vif, 'params> {
-        search_for_bss(
+        scan::search_for_bss(
             self.sta_tx_rx,
             &mut self.rx_router_endpoint,
             scan_config,

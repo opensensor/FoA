@@ -1,8 +1,19 @@
 #![no_std]
+
+extern crate alloc;
+
 use foa_sta::Credentials;
 
+use esp_backtrace as _;
+use esp_println as _;
+
+pub fn init() {
+    esp_alloc::heap_allocator!(size: 40 * 1024);
+    esp_bootloader_esp_idf::esp_app_desc!();
+}
+
 pub fn get_credentials() -> Option<Credentials<'static>> {
-    option_env!("PASSWORD").map(Credentials::Passphrase)
+    option_env!("PASSWORD").map (Credentials::Passphrase)
 }
 #[macro_export]
 macro_rules! mk_static {

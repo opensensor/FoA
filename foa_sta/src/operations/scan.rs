@@ -26,6 +26,7 @@ pub fn search_for_bss<'foa, 'vif, 'params>(
             PostChannelScanAction::Stop(bss)
         },
         scan_config,
+        false,
     )
     .map(|res| match res {
         Ok(Some(bss)) => Ok(bss),
@@ -66,6 +67,41 @@ pub fn enumerate_bss<'foa, 'vif, 'params, const MAX_BSS: usize>(
             PostChannelScanAction::Continue
         },
         scan_config,
+        false,
+    )
+    .map(|result| result.map(|_| ()).map_err(StaError::LMacError))
+}
+#[cfg(feature = "alloc")]
+/// Scan continuously for networks and run the call back whenever one is found.
+///
+/// When the callback returns false the scan will be stopped and the future finishes.
+pub fn scan_continuously<'foa, 'vif, 'params>(
+    sta_tx_rx: &'params StaTxRx<'foa, 'vif>,
+    rx_router_endpoint: &'params mut StaRxRouterEndpoint<'foa, 'vif>,
+    scan_config: Option<ScanConfig<'params>>,
+    bss_list: &'params mut alloc::collections::BTreeMap<[u8; 6], BSS>,
+    bss_found_cb: fn(&BSS) -> bool,
+) -> impl Future<Output = Result<(), StaError>> {
+    foa::util::operations::scan::<_, ()>(
+        sta_tx_rx.interface_control,
+        rx_router_endpoint,
+        move |beacon_frame, received_frame, _channel| {
+            if bss_list.contains_key(&*beacon_frame.header.bssid) {
+                return PostChannelScanAction::Continue;
+            }
+            let Some(bss) = BSS::from_beacon_like(beacon_frame, received_frame.rssi()) else {
+                return PostChannelScanAction::Continue;
+            };
+            let action = if bss_found_cb(&bss) {
+                PostChannelScanAction::Continue
+            } else {
+                PostChannelScanAction::Stop(())
+            };
+            let _ = bss_list.insert(*beacon_frame.header.bssid, bss);
+            action
+        },
+        scan_config,
+        true,
     )
     .map(|result| result.map(|_| ()).map_err(StaError::LMacError))
 }

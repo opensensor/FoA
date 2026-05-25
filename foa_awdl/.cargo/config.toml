@@ -1,7 +1,0 @@
-[unstable]
-build-std = ["core", "alloc"]
-
-[build]
-rustflags = [
-  "-C", "link-arg=-Tdefmt.x"
-]

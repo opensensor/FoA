@@ -24,7 +24,7 @@ use embassy_sync::{
     mutex::Mutex,
     watch::{DynReceiver, Watch},
 };
-use esp_hal::efuse::Efuse;
+use esp_hal::efuse::base_mac_address;
 use esp_wifi_hal::prelude::*;
 use off_channel::OffChannelRequester;
 pub use off_channel::{OffChannelOperation, OffChannelRequest};
@@ -86,12 +86,13 @@ impl ChannelState {
     /// Unlock the channel for the specified interface.
     pub fn unlock_channel(&mut self, interface: usize) {
         if let Some((ref mut interfaces, _)) = self.locks
-            && interfaces[interface] {
-                interfaces[interface] = false;
-                if *interfaces == [false; INTERFACE_COUNT] {
-                    self.locks = None;
-                }
+            && interfaces[interface]
+        {
+            interfaces[interface] = false;
+            if *interfaces == [false; INTERFACE_COUNT] {
+                self.locks = None;
             }
+        }
     }
     /// Check whether an off channel operation is in progress.
     pub fn off_channel_operation_in_progress(&self) -> bool {
@@ -435,7 +436,7 @@ impl<'res> LMacInterfaceControl<'res> {
     /// NOTE: This reads the base MAC address from the efuses and adds the interface index to the
     /// last octet.
     pub fn get_factory_mac_for_interface(&self) -> [u8; 6] {
-        let mut base_mac = Efuse::read_base_mac_address();
+        let mut base_mac: [u8; 6] = base_mac_address().as_bytes().try_into().unwrap();
         base_mac[5] += self.interface() as u8;
         base_mac
     }

@@ -4,9 +4,7 @@
 use defmt::info;
 use embassy_executor::Spawner;
 
-use esp_backtrace as _;
 use esp_hal::timer::timg::TimerGroup;
-use esp_println as _;
 
 use examples::{get_credentials, mk_static};
 use foa::{FoAResources, FoARunner, VirtualInterface};

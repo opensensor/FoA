@@ -6,10 +6,10 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
-esp-hal = "=1.0.0"
-esp-rtos = { version = "0.2.0", features = ["embassy"] }
-esp-backtrace = { version = "0.18.1", features = ["panic-handler", "defmt"] }
-esp-println = { version = "0.16.1", features = [
+esp-hal = { workspace = true }
+esp-rtos = { version = "0.3.0", features = ["embassy"] }
+esp-backtrace = { version = "0.19.0", features = ["panic-handler", "defmt"] }
+esp-println = { version = "0.17.0", features = [
     "defmt-espflash",
     "critical-section",
     "uart",
@@ -27,10 +27,10 @@ embassy-net = { version = "0.9.0", features = [
 ] }
 embassy-futures = { version = "0.1.1", features = ["defmt"] }
 embassy-time = { version = "0.5.0", features = ["defmt"] }
-embassy-executor = { version = "0.9.1", features = ["defmt"] }
+embassy-executor = { version = "0.10.0", features = ["defmt"] }
 
 foa = { version = "0.1.0", path = "../foa", features = ["defmt"] }
-foa_sta = { path = "../foa_sta", features = ["defmt"] }
+foa_sta = { path = "../foa_sta", features = ["defmt", "alloc"] }
 foa_awdl = { path = "../foa_awdl", features = ["defmt"] }
 
 static_cell = "2.1.0"
@@ -43,23 +43,10 @@ reqwless = { version = "0.14.0", default-features = false, features = [
 ] }
 # esp-mbedtls = { git = "https://github.com/esp-rs/esp-mbedtls.git", default-features = false,  }
 embedded-io = "0.7.1"
-esp-alloc = "0.9.0"
-esp-bootloader-esp-idf = { version = "0.4.0", features = ["esp-rom-sys"] }
+esp-alloc = "0.10.0"
+esp-bootloader-esp-idf = { version = "0.5.0", features = ["esp-rom-sys"] }
 embassy-sync = "0.8.0"
 
-[profile.dev]
-# Rust debug is too slow.
-# For debug builds always builds with some optimization
-opt-level = "s"
-
-[profile.release]
-codegen-units = 1        # LLVM can perform better optimizations using a single thread
-debug = 2
-debug-assertions = false
-incremental = false
-lto = 'fat'
-opt-level = 's'
-overflow-checks = false
 
 [features]
 esp32 = [

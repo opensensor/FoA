@@ -1,16 +1,20 @@
 #![no_std]
 #![no_main]
 
+use alloc::collections::btree_map::BTreeMap;
 use defmt::info;
 use embassy_executor::Spawner;
 
-use esp_backtrace as _;
-use esp_hal::timer::timg::TimerGroup;
-use esp_println as _;
+use esp_hal::{
+    clock::CpuClock, interrupt::software::SoftwareInterruptControl,
+    timer::timg::TimerGroup,
+};
 
 use examples::mk_static;
 use foa::{FoAResources, FoARunner, VirtualInterface};
 use foa_sta::{StaResources, StaRunner};
+
+extern crate alloc;
 
 #[embassy_executor::task]
 async fn foa_task(mut runner: FoARunner<'static>) {
@@ -23,28 +27,30 @@ async fn sta_task(mut runner: StaRunner<'static, 'static>) {
 
 #[esp_rtos::main]
 async fn main(spawner: Spawner) {
-    esp_bootloader_esp_idf::esp_app_desc!();
-    let peripherals = esp_hal::init(esp_hal::Config::default());
+    let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
+    let peripherals = esp_hal::init(config);
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
-    esp_rtos::start(timg0.timer0);
+    let sw_interrupt = SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
+    esp_rtos::start(timg0.timer0, sw_interrupt.software_interrupt0);
+    examples::init();
 
     let stack_resources = mk_static!(FoAResources, FoAResources::new());
     let ([sta_vif, ..], foa_runner) = foa::init(stack_resources, peripherals.WIFI);
-    spawner.must_spawn(foa_task(foa_runner));
+    spawner.spawn(foa_task(foa_runner).unwrap());
     let sta_resources = mk_static!(StaResources, StaResources::default());
     let (mut sta_control, sta_runner, _net_device) = foa_sta::new_sta_interface(
         mk_static!(VirtualInterface<'static>, sta_vif),
         sta_resources,
     );
-    spawner.must_spawn(sta_task(sta_runner));
+    spawner.spawn(sta_task(sta_runner).unwrap());
     info!("Starting scan.");
-    let mut found_bss = heapless::index_map::FnvIndexMap::new();
-    let _ = sta_control.scan::<32>(None, &mut found_bss).await;
-    for (_, bss) in found_bss {
+    let mut found_bss = BTreeMap::new();
+    let _ = sta_control.scan_continuously(None, &mut found_bss, move |bss| {
         info!(
             "Found BSS, with SSID: \"{}\", BSSID: {}, channel: {}, last RSSI: {} Security: {:?}.",
             bss.ssid, bss.bssid, bss.channel, bss.last_rssi, bss.security_config
         );
-    }
+        true
+    }).await;
 }

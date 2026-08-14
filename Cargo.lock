@@ -1313,7 +1313,7 @@ checksum = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
 
 [[package]]
 name = "foa"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "critical-section",
  "defmt 1.1.1",
@@ -1356,7 +1356,7 @@ dependencies = [
 
 [[package]]
 name = "foa_sta"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "defmt 1.1.1",
  "defmt-or-log",

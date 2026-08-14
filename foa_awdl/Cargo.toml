@@ -9,7 +9,7 @@ embassy-net-driver-channel = { workspace = true }
 embassy-sync = { workspace = true }
 embassy-time = { workspace = true }
 
-foa = { path = "../foa/" }
+foa = { version = "0.2.0", path = "../foa/" }
 heapless = { workspace = true }
 esp-config = { workspace = true }
 llc-rs = { workspace = true }

@@ -2,6 +2,7 @@
 
 extern crate alloc;
 
+use embassy_net::DhcpConfig;
 use foa_sta::Credentials;
 
 use esp_backtrace as _;
@@ -13,7 +14,10 @@ pub fn init() {
 }
 
 pub fn get_credentials() -> Option<Credentials<'static>> {
-    option_env!("PASSWORD").map (Credentials::Passphrase)
+    option_env!("PASSWORD").map(Credentials::Passphrase)
+}
+pub fn get_embassy_net_config() -> embassy_net::Config {
+    embassy_net::Config::dhcpv4(DhcpConfig::default())
 }
 #[macro_export]
 macro_rules! mk_static {

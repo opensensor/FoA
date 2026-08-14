@@ -8,44 +8,44 @@ license = "MIT OR Apache-2.0"
 [dependencies]
 esp-hal = { workspace = true }
 esp-rtos = { version = "0.3.0", features = ["embassy"] }
-esp-backtrace = { version = "0.19.0", features = ["panic-handler", "defmt"] }
+esp-backtrace = { version = "0.19.0", features = ["panic-handler", "println"] }
 esp-println = { version = "0.17.0", features = [
     "defmt-espflash",
     "critical-section",
     "uart",
 ], default-features = false }
 
-embassy-net = { version = "0.9.0", features = [
+embassy-net = { version = "0.9.1", features = [
     "proto-ipv4",
     "proto-ipv6",
     "dhcpv4",
+    "multicast",
+    "slaac",
+    "auto-icmp-echo-reply",
     "medium-ethernet",
     "tcp",
     "udp",
     "dns",
-    "defmt",
 ] }
-embassy-futures = { version = "0.1.1", features = ["defmt"] }
-embassy-time = { version = "0.5.0", features = ["defmt"] }
-embassy-executor = { version = "0.10.0", features = ["defmt"] }
+embassy-futures = { version = "0.1.2"}
+embassy-time = { version = "0.5.1" }
+embassy-executor = { version = "0.10.0" }
 
-foa = { version = "0.1.0", path = "../foa", features = ["defmt"] }
-foa_sta = { path = "../foa_sta", features = ["defmt", "alloc"] }
-foa_awdl = { path = "../foa_awdl", features = ["defmt"] }
+foa = { version = "0.1.0", path = "../foa" }
+foa_sta = { path = "../foa_sta", features = ["alloc"] }
+foa_awdl = { path = "../foa_awdl" }
 
-static_cell = "2.1.0"
-heapless = "0.9.1"
+static_cell = "2.1.1"
+heapless = "0.9.3"
 embedded-io-async = "0.7.0"
 
-defmt = "1.0.1"
-reqwless = { version = "0.14.0", default-features = false, features = [
-    "defmt",
-] }
+reqwless = { version = "0.14.0", default-features = false }
 # esp-mbedtls = { git = "https://github.com/esp-rs/esp-mbedtls.git", default-features = false,  }
 embedded-io = "0.7.1"
 esp-alloc = "0.10.0"
 esp-bootloader-esp-idf = { version = "0.5.0", features = ["esp-rom-sys"] }
 embassy-sync = "0.8.0"
+log.workspace = true
 
 
 [features]

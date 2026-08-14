@@ -1,15 +1,12 @@
 #![no_std]
 #![no_main]
 
-use defmt::info;
 use embassy_executor::Spawner;
-use embassy_futures::select::select;
 use embassy_net::{
     DhcpConfig, Runner as NetRunner, StackResources as NetStackResources,
     dns::DnsSocket,
     tcp::client::{TcpClient, TcpClientState},
 };
-use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embedded_io_async::Read;
 use esp_hal::{
     Async,
@@ -21,6 +18,7 @@ use esp_hal::{
 use examples::{get_credentials, mk_static};
 use foa::{FoAResources, FoARunner, VirtualInterface};
 use foa_sta::{StaNetDevice, StaResources, StaRunner};
+use log::info;
 use reqwless::{client::HttpClient, request::Method, response::BodyReader};
 
 const SSID: &str = env!("SSID");
@@ -67,11 +65,10 @@ async fn main(spawner: Spawner) {
     );
     spawner.spawn(net_task(net_runner).unwrap());
 
-    defmt::unwrap!(
-        sta_control
-            .connect_by_ssid(SSID, None, get_credentials())
-            .await
-    );
+    sta_control
+        .connect_by_ssid(SSID, None, get_credentials())
+        .await
+        .unwrap();
 
     info!("Connected to {}.", SSID);
 
@@ -96,9 +93,8 @@ async fn main(spawner: Spawner) {
         .with_rx(rx_pin)
         .with_tx(tx_pin)
         .into_async();
-    defmt::flush();
 
-    let queue_buffers = mk_static!([([u8; 1500], usize); 8], [([0u8; 1500], 0); 8]);
+    let parrot_buffer = mk_static!([u8; 1500], [0u8; 1500]);
 
     loop {
         let mut request = http_client
@@ -110,33 +106,17 @@ async fn main(spawner: Spawner) {
             panic!()
         };
 
-        let mut queue =
-            embassy_sync::zerocopy_channel::Channel::<'_, NoopRawMutex, _>::new(queue_buffers);
-        let (mut queue_sender, mut queue_receiver) = queue.split();
-        select(
-            async move {
-                loop {
-                    let (parrot_buffer, length) = queue_sender.send().await;
-                    let Ok(read) = chunked_reader.read(&mut parrot_buffer[..*length]).await else {
-                        break;
-                    };
-                    *length = read;
-                    queue_sender.send_done();
-                }
-            },
-            async {
-                loop {
-                    let (parrot_buffer, length) = queue_receiver.receive().await;
-                    let _ = <Uart<'static, Async> as embedded_io_async::Write>::write_all(
-                        &mut uart,
-                        &parrot_buffer[..*length],
-                    )
-                    .await;
-                    let _ = uart.flush_async().await;
-                    queue_receiver.receive_done();
-                }
-            },
-        )
-        .await;
+        loop {
+            let Ok(read) = chunked_reader.read(parrot_buffer).await else {
+                break;
+            };
+            let _ = <Uart<'static, Async> as embedded_io_async::Write>::write_all(
+                &mut uart,
+                &parrot_buffer[..read],
+            )
+            .await;
+            let _ = uart.flush_async().await;
+            esp_println::println!();
+        }
     }
 }

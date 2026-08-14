@@ -87,9 +87,10 @@ pub enum SecurityConfig {
 }
 impl SecurityConfig {
     fn generate_rsn_report(rsn: &RsnElement<'_>) -> Option<RsnReport> {
-        let mut rsn_report = RsnReport::default();
-
-        rsn_report.group_cipher = rsn.group_data_cipher_suite?;
+        let mut rsn_report = RsnReport {
+            group_cipher: rsn.group_data_cipher_suite?,
+            ..Default::default()
+        };
         if let Some(rsn_capabilities) = rsn.rsn_capbilities {
             if rsn_capabilities.mfp_config() == OptionalFeatureConfig::Invalid {
                 return None;

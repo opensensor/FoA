@@ -36,7 +36,7 @@ futures-util = { workspace = true }
 esp-config = { workspace = true, features = ["build"] }
 
 [features]
-default = ["alloc"]
+default = ["alloc", "wpa2"]
 rsn = ["ieee80211/crypto"]
 wpa2 = ["rsn"]
 

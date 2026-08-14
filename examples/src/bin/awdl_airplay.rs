@@ -4,7 +4,6 @@
 extern crate alloc;
 
 use alloc::{format, string::String};
-use defmt::info;
 use embassy_executor::Spawner;
 use embassy_net::{
     Ipv6Cidr, Runner as NetRunner, StackResources as NetStackResources, StaticConfigV6,
@@ -17,6 +16,7 @@ use esp_hal::{interrupt::software::SoftwareInterruptControl, timer::timg::TimerG
 use examples::mk_static;
 use foa::{FoAResources, FoARunner, VirtualInterface};
 use foa_awdl::{AwdlEvent, AwdlNetDevice, AwdlResources, AwdlRunner};
+use log::info;
 use reqwless::{client::HttpClient, request::Method};
 
 #[embassy_executor::task]
@@ -33,7 +33,6 @@ async fn net_task(mut net_runner: NetRunner<'static, AwdlNetDevice<'static>>) ->
 }
 #[esp_rtos::main]
 async fn main(spawner: Spawner) {
-    esp_bootloader_esp_idf::esp_app_desc!();
     heap_allocator!(size: 10 * 1024);
     let peripherals = esp_hal::init(esp_hal::Config::default());
 

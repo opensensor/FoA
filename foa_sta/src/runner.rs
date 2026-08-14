@@ -179,20 +179,24 @@ impl ConnectionRunner<'_, '_> {
                 _phantom: PhantomData,
             };
 
-            #[cfg(feature = "rsn")]
-            let tx_crypto_info = sta_tx_rx.map_crypto_state(|crypto_state| {
-                (
-                    crypto_state
-                        .security_associations
-                        .ptksa
-                        .next_packet_number(),
-                    crypto_state.security_associations.ptksa.key_id,
-                    crypto_state.ptk_key_slot.key_slot(),
-                )
-            });
+            cfg_select! {
+                feature = "rsn" => {
+                    let tx_crypto_info = sta_tx_rx.map_crypto_state(|crypto_state| {
+                        (
+                            crypto_state
+                                .security_associations
+                                .ptksa
+                                .next_packet_number(),
+                            crypto_state.security_associations.ptksa.key_id,
+                            crypto_state.ptk_key_slot.key_slot(),
+                        )
+                    });
+                },
+                _ => {
+                    let tx_crypto_info = None::<(u64, u8, usize)>;
+                }
 
-            #[cfg(not(feature = "rsn"))]
-            let tx_crypto_info = None::<(u64, u8, u8)>;
+            }
             let Some((written, key_slot)) =
                 (if let Some((new_packet_number, key_id, key_slot)) = tx_crypto_info {
                     tx_buf
@@ -349,7 +353,6 @@ impl RoutingRunner<'_, '_> {
             return None;
         };
         self.rx_runner.rx_done(written);
-        trace!("Received {} bytes from {}", written, source_address);
         Some(())
     }
     /// Forward a received data frame to higher layers.

@@ -2,12 +2,11 @@
 #![no_main]
 
 use alloc::collections::btree_map::BTreeMap;
-use defmt::info;
 use embassy_executor::Spawner;
+use log::info;
 
 use esp_hal::{
-    clock::CpuClock, interrupt::software::SoftwareInterruptControl,
-    timer::timg::TimerGroup,
+    clock::CpuClock, interrupt::software::SoftwareInterruptControl, timer::timg::TimerGroup,
 };
 
 use examples::mk_static;

@@ -1,18 +1,18 @@
 #![no_std]
 #![no_main]
 
-use defmt::info;
 use embassy_executor::Spawner;
 use embassy_net::{
-    DhcpConfig, Runner as NetRunner, StackResources as NetStackResources,
+    Runner as NetRunner, StackResources as NetStackResources,
     dns::{DnsQueryType, DnsSocket},
     udp::{PacketMetadata, UdpSocket},
 };
 use embassy_time::Timer;
+use log::info;
 
-use esp_hal::{interrupt::software::SoftwareInterruptControl, timer::timg::TimerGroup};
+use esp_hal::{interrupt::software::SoftwareInterruptControl, rng::Rng, timer::timg::TimerGroup};
 
-use examples::{get_credentials, mk_static};
+use examples::{get_credentials, get_embassy_net_config, mk_static};
 use foa::{FoAResources, FoARunner, VirtualInterface};
 use foa_sta::{ConnectionConfig, StaNetDevice, StaResources, StaRunner};
 
@@ -51,28 +51,27 @@ async fn main(spawner: Spawner) {
     spawner.spawn(sta_task(sta_runner).unwrap());
 
     let mac_address = sta_control.randomize_mac_address().unwrap();
-    info!("Using MAC address: {:#x}", mac_address);
+    info!("Using MAC address: {:x?}", mac_address);
 
     let net_stack_resources = mk_static!(NetStackResources<3>, NetStackResources::new());
     let (net_stack, net_runner) = embassy_net::new(
         net_device,
-        embassy_net::Config::dhcpv4(DhcpConfig::default()),
+        get_embassy_net_config(),
         net_stack_resources,
-        1234,
+        Rng::new().random() as u64,
     );
 
-    defmt::unwrap!(
-        sta_control
-            .connect_by_ssid(
-                SSID,
-                Some(ConnectionConfig {
-                    beacon_timeout: None,
-                    ..Default::default()
-                }),
-                get_credentials()
-            )
-            .await
-    );
+    sta_control
+        .connect_by_ssid(
+            SSID,
+            Some(ConnectionConfig {
+                beacon_timeout: None,
+                ..Default::default()
+            }),
+            get_credentials(),
+        )
+        .await
+        .unwrap();
     info!("Connected successfully.");
 
     spawner.spawn(net_task(net_runner).unwrap());

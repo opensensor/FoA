@@ -1,53 +1,55 @@
 #![no_std]
 #![no_main]
 
-use defmt::info;
+use alloc::collections::btree_map::BTreeMap;
 use embassy_executor::Spawner;
-use embassy_futures::join::join3;
+use log::info;
 
-use esp_backtrace as _;
-use esp_hal::{rng::Rng, timer::timg::TimerGroup};
-use esp_println as _;
+use esp_hal::{
+    clock::CpuClock, interrupt::software::SoftwareInterruptControl, timer::timg::TimerGroup,
+};
 
-use foa::FoAResources;
-use foa_sta::StaResources;
+use examples::mk_static;
+use foa::{FoAResources, FoARunner, VirtualInterface};
+use foa_sta::{StaResources, StaRunner};
 
-macro_rules! mk_static {
-    ($t:ty,$val:expr) => {{
-        static STATIC_CELL: static_cell::StaticCell<$t> = static_cell::StaticCell::new();
-        #[deny(unused_attributes)]
-        let x = STATIC_CELL.uninit().write(($val));
-        x
-    }};
+extern crate alloc;
+
+#[embassy_executor::task]
+async fn foa_task(mut runner: FoARunner<'static>) {
+    runner.run().await
+}
+#[embassy_executor::task]
+async fn sta_task(mut runner: StaRunner<'static, 'static>) {
+    runner.run().await
 }
 
 #[esp_rtos::main]
-async fn main(_spawner: Spawner) {
-    esp_bootloader_esp_idf::esp_app_desc!();
-    let peripherals = esp_hal::init(esp_hal::Config::default());
+async fn main(spawner: Spawner) {
+    let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
+    let peripherals = esp_hal::init(config);
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
-    esp_hal_embassy::init(timg0.timer0);
+    let sw_interrupt = SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
+    esp_rtos::start(timg0.timer0, sw_interrupt.software_interrupt0);
+    examples::init();
 
     let stack_resources = mk_static!(FoAResources, FoAResources::new());
-    let ([mut sta_vif, ..], mut foa_runner) = foa::init(
-        stack_resources,
-        peripherals.WIFI,
-        peripherals.ADC2,
-    );
+    let ([sta_vif, ..], foa_runner) = foa::init(stack_resources, peripherals.WIFI);
+    spawner.spawn(foa_task(foa_runner).unwrap());
     let sta_resources = mk_static!(StaResources, StaResources::default());
-    let (mut sta_control, mut sta_runner, _net_device) =
-        foa_sta::new_sta_interface(&mut sta_vif, sta_resources, Rng::new(peripherals.RNG));
+    let (mut sta_control, sta_runner, _net_device) = foa_sta::new_sta_interface(
+        mk_static!(VirtualInterface<'static>, sta_vif),
+        sta_resources,
+    );
+    spawner.spawn(sta_task(sta_runner).unwrap());
     info!("Starting scan.");
-    join3(foa_runner.run(), sta_runner.run(), async {
-        let mut found_bss = heapless::FnvIndexMap::new();
-        let _ = sta_control.scan::<32>(None, &mut found_bss).await;
-        for (_, bss) in found_bss {
-            info!(
-                "Found BSS, with SSID: \"{}\", BSSID: {}, channel: {}, last RSSI: {} Security: {:?}.",
-                bss.ssid, bss.bssid, bss.channel, bss.last_rssi, bss.security_config
-            );
-        }
-    })
-    .await;
+    let mut found_bss = BTreeMap::new();
+    let _ = sta_control.scan_continuously(None, &mut found_bss, move |bss| {
+        info!(
+            "Found BSS, with SSID: \"{}\", BSSID: {}, channel: {}, last RSSI: {} Security: {:?}.",
+            bss.ssid, bss.bssid, bss.channel, bss.last_rssi, bss.security_config
+        );
+        true
+    }).await;
 }

@@ -3,9 +3,8 @@ use defmt_or_log::{debug, trace};
 #[cfg(feature = "ndp-inject")]
 use embassy_futures::select::{select, Either};
 use embassy_net_driver_channel::RxRunner;
-use embassy_sync::channel::DynamicReceiver;
 use embassy_time::{Duration, Instant, WithTimeout};
-use foa::ReceivedFrame;
+use foa::{ReceivedFrame, RxEndpoint};
 use ieee80211::{
     data_frame::{DataFrame, DataFrameReadPayload, PotentiallyWrappedPayload},
     mac_parser::MACAddress,
@@ -23,7 +22,7 @@ use crate::{
 
 /// Handles reception of all MPDUs.
 pub struct AwdlMpduRxRunner<'foa, 'vif> {
-    pub rx_queue: &'vif DynamicReceiver<'foa, ReceivedFrame<'foa>>,
+    pub interface_rx_endpoint: RxEndpoint<'foa, 'vif>,
     pub common_resources: &'vif CommonResources,
     pub rx_runner: RxRunner<'vif, AWDL_MTU>,
 }
@@ -104,7 +103,9 @@ impl AwdlMpduRxRunner<'_, '_> {
         let Some(source_address) = data_frame.header.source_address() else {
             return;
         };
-        let Some(PotentiallyWrappedPayload::Unwrapped(DataFrameReadPayload::Single(payload))) = data_frame.potentially_wrapped_payload(None) else {
+        let Some(PotentiallyWrappedPayload::Unwrapped(DataFrameReadPayload::Single(payload))) =
+            data_frame.potentially_wrapped_payload(None)
+        else {
             return;
         };
         let Ok(llc_frame) = payload.pread::<SnapLlcFrame>(0) else {
@@ -223,7 +224,7 @@ impl AwdlMpduRxRunner<'_, '_> {
         loop {
             #[cfg(feature = "ndp-inject")]
             match select(
-                self.rx_queue.receive(),
+                self.interface_rx_endpoint.receive(),
                 self.common_resources.ndp_inject_signal.wait(),
             )
             .await

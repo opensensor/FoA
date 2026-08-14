@@ -1,10 +1,9 @@
 use core::{cell::Cell, future::poll_fn, task::Poll};
 
 use embassy_sync::waitqueue::AtomicWaker;
-use esp_wifi_hal::ScanningMode;
+use esp_wifi_hal::prelude::*;
 
 use super::{LMacError, LMacInterfaceControl};
-
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum OffChannelRequestState {
@@ -55,13 +54,16 @@ impl OffChannelRequester {
             response_waker: AtomicWaker::new(),
         }
     }
-    pub async fn request(&self) -> Result<(), LMacError> {
+    pub fn request(&self) -> impl Future<Output = Result<(), LMacError>> {
         self.status.set(OffChannelRequestState::Requested);
         self.request_waker.wake();
         poll_fn(|cx| {
             let status = self.status.get();
             match status {
-                OffChannelRequestState::Granted => Poll::Ready(Ok(())),
+                OffChannelRequestState::Granted => {
+                    self.status.set(OffChannelRequestState::NotRequested);
+                    Poll::Ready(Ok(()))
+                }
                 OffChannelRequestState::Rejected => {
                     Poll::Ready(Err(LMacError::OffChannelRequestRejected))
                 }
@@ -71,11 +73,8 @@ impl OffChannelRequester {
                 }
             }
         })
-        .await?;
-        self.status.set(OffChannelRequestState::NotRequested);
-        Ok(())
     }
-    pub async fn wait_for_request(&self) -> OffChannelRequest<'_> {
+    pub fn wait_for_request(&self) -> impl Future<Output = OffChannelRequest<'_>> {
         poll_fn(|cx| {
             let status = self.status.get();
             if status == OffChannelRequestState::Requested {
@@ -85,7 +84,6 @@ impl OffChannelRequester {
                 Poll::Pending
             }
         })
-        .await
     }
 }
 
@@ -103,17 +101,18 @@ impl OffChannelOperation<'_, '_> {
     pub fn set_channel(&mut self, channel: u8) -> Result<(), LMacError> {
         self.interface_control
             .shared_state
-            .wifi
-            .set_channel(channel)
-            .map_err(|_| LMacError::InvalidChannel)
+            .channel_state
+            .lock(|ref_cell| {
+                ref_cell
+                    .borrow_mut()
+                    .channel_controller
+                    .set_channel(channel)
+                    .map_err(|_| LMacError::InvalidChannel)
+            })
     }
     /// Set the scanning mode.
     pub fn set_scanning_mode(&mut self, scanning_mode: ScanningMode) {
-        let _ = self
-            .interface_control
-            .shared_state
-            .wifi
-            .set_scanning_mode(self.rx_filter_interface, scanning_mode);
+        self.interface_control.set_scanning_mode(scanning_mode);
     }
 }
 impl Drop for OffChannelOperation<'_, '_> {
@@ -121,10 +120,7 @@ impl Drop for OffChannelOperation<'_, '_> {
         // This accounts for the locked channel having changed during the operation.
         if let Some(channel) = self
             .interface_control
-            .shared_state
-            .get_channel_state()
-            .locks
-            .map(|(_, channel)| channel)
+            .home_channel()
             .or(self.previously_locked_channel)
         {
             debug!("Switched back to channel {}.", channel);

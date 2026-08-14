@@ -1,13 +1,13 @@
 use core::{cell::RefCell, ops::Deref};
 
 use embassy_sync::{
-    blocking_mutex::{raw::NoopRawMutex, NoopMutex},
+    blocking_mutex::{NoopMutex, raw::NoopRawMutex},
     signal::Signal,
 };
 use embassy_time::Duration;
 use ieee80211::{common::AssociationID, mac_parser::MACAddress};
 
-use crate::BSS;
+use crate::bss::BSS;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 /// Configuration parameters for the connection.
@@ -18,6 +18,10 @@ pub struct ConnectionConfig {
     pub handshake_retries: usize,
     /// Maximum time a response can take during a handshake step.
     pub handshake_timeout: Duration,
+    /// After receiving no beacon from the AP for this duration, we disconnect.
+    ///
+    /// Set to [None] to disable beacon timeouts.
+    pub beacon_timeout: Option<Duration>,
 }
 impl Default for ConnectionConfig {
     fn default() -> Self {
@@ -25,6 +29,7 @@ impl Default for ConnectionConfig {
             automatic_reconnect: true,
             handshake_retries: 4,
             handshake_timeout: Duration::from_millis(100),
+            beacon_timeout: Some(Duration::from_secs(3)),
         }
     }
 }
@@ -140,6 +145,8 @@ impl ConnectionStateTracker {
     #[allow(unused)]
     /// Get the BSSID and our own address for the current connection.
     pub fn bssid_and_own_address(&self) -> Option<(MACAddress, MACAddress)> {
-        self.map_connection_info(|connection_info| (connection_info.bss.bssid, connection_info.own_address))
+        self.map_connection_info(|connection_info| {
+            (connection_info.bss.bssid, connection_info.own_address)
+        })
     }
 }

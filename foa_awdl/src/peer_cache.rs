@@ -118,7 +118,7 @@ pub(crate) trait AwdlPeerCache: for<'a> Index<&'a [u8; 6], Output = AwdlPeer> {
         self.iter().for_each(f);
     }
 }
-pub type StaticAwdlPeerCache = FnvIndexMap<[u8; 6], AwdlPeer, PEER_CACHE_SIZE>;
+pub(crate) type StaticAwdlPeerCache = FnvIndexMap<[u8; 6], AwdlPeer, PEER_CACHE_SIZE>;
 impl AwdlPeerCache for StaticAwdlPeerCache {
     const UNINIT: Self = Self::new();
     fn get(&self, peer_address: &[u8; 6]) -> Option<&AwdlPeer> {

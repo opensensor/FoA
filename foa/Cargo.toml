@@ -10,30 +10,38 @@ homepage = "https://esp32-open-mac.be/"
 repository = "https://github.com/esp32-open-mac/FoA"
 
 [dependencies]
-embassy-sync = "0.7.2"
-embassy-futures = "0.1.2"
+embassy-futures = { workspace = true }
+embassy-sync = { workspace = true }
+embassy-time = { workspace = true }
 
-esp-hal = "1.0.0"
-esp-wifi-hal = "0.1.6"
+esp-hal = { workspace = true }
+esp-config = { workspace = true }
+
+esp-wifi-hal = "0.3.1"
 static_cell = "2.1.1"
 critical-section = "1.2.0"
-portable-atomic = "1.11.1"
-esp-config = "0.6.0"
-defmt-or-log = { version = "0.2.2", default-features = false }
-defmt = { version = "1.0.1", optional = true }
-embassy-time = "0.5.0"
-heapless = "0.9.1"
-ieee80211 = "0.5.9"
-log = { version = "0.4.28", optional = true }
+portable-atomic = { workspace = true }
+
+ieee80211 = { workspace = true }
+log = { workspace = true, optional = true }
+defmt = { workspace = true, optional = true }
+defmt-or-log = { workspace = true }
+futures-util = { workspace = true }
 
 [build-dependencies]
-esp-config = { version = "0.6.0", features = ["build"] }
+esp-config = { workspace = true, features = ["build"] }
 
 [features]
 arc_buffers = []
+multi_rate_retry = []
 
 log = ["dep:log", "defmt-or-log/log", "esp-wifi-hal/log"]
-defmt = ["dep:defmt", "defmt-or-log/defmt", "esp-wifi-hal/defmt"]
+defmt = [
+    "dep:defmt",
+    "defmt-or-log/defmt",
+    "esp-wifi-hal/defmt",
+    "esp-hal/defmt",
+]
 
 esp32 = ["esp-hal/esp32", "esp-wifi-hal/esp32"]
 esp32s2 = ["esp-hal/esp32s2", "esp-wifi-hal/esp32s2"]

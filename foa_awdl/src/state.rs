@@ -1,6 +1,6 @@
 use core::cell::{Cell, RefCell, RefMut};
 
-use defmt_or_log::debug;
+use defmt_or_log::{debug, trace};
 use embassy_net_driver_channel::State as NetState;
 use embassy_sync::{
     blocking_mutex::{raw::NoopRawMutex, NoopMutex},
@@ -121,7 +121,7 @@ impl CommonResources {
     /// Raise an event to the user.
     pub fn raise_user_event(&self, event: AwdlEvent) {
         if self.event_queue.try_send(event).is_err() {
-            debug!("Failed to raise user event, since queue is full.");
+            trace!("Failed to raise user event, since queue is full.");
         }
     }
     /// Choose a master for time synchronization.

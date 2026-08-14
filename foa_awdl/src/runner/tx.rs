@@ -5,10 +5,7 @@ use defmt_or_log::{debug, error, trace};
 use embassy_net_driver_channel::TxRunner;
 use embassy_time::{Duration, Timer};
 use ether_type::EtherType;
-use foa::{
-    esp_wifi_hal::{TxParameters, WiFiRate},
-    LMacInterfaceControl,
-};
+use foa::{esp_wifi_hal::prelude::*, RetryBehaviour, TxEndpoint};
 use ieee80211::{data_frame::builder::DataFrameBuilder, mac_parser::MACAddress, scroll::Pwrite};
 use llc_rs::SnapLlcFrame;
 use smoltcp::wire::EthernetFrame;
@@ -19,8 +16,8 @@ use crate::{peer::OverlapSlotState, state::CommonResources, APPLE_OUI, AWDL_BSSI
 
 /// Handles transmission of MSDUs.
 pub struct AwdlMsduTxRunner<'foa, 'vif> {
-    pub interface_control: &'vif LMacInterfaceControl<'foa>,
     pub tx_runner: TxRunner<'vif, AWDL_MTU>,
+    pub tx_endpoint: &'vif TxEndpoint<'foa>,
     pub common_resources: &'vif CommonResources,
 }
 impl AwdlMsduTxRunner<'_, '_> {
@@ -39,8 +36,8 @@ impl AwdlMsduTxRunner<'_, '_> {
     }
     async fn transmit_frame(
         msdu_buffer: &mut [u8],
-        interface_control: &LMacInterfaceControl<'_>,
         common_resources: &CommonResources,
+        tx_endpoint: &TxEndpoint<'_>,
         data_frame_sequence_number: &mut u16,
     ) {
         let Ok(mut ethernet_frame) = EthernetFrame::new_checked(msdu_buffer) else {
@@ -66,7 +63,7 @@ impl AwdlMsduTxRunner<'_, '_> {
             return;
         }
 
-        let mut tx_buffer = interface_control.alloc_tx_buf().await;
+        let mut tx_buffer = tx_endpoint.alloc_tx_buf().await;
         match common_resources.get_common_slot_for_peer(&destination_address) {
             OverlapSlotState::OverlappingAt(timestamp) => {
                 Timer::at(timestamp + Duration::from_micros(110)).await
@@ -110,23 +107,17 @@ impl AwdlMsduTxRunner<'_, '_> {
             error!("Data frame serialization failed.");
             return;
         };
-        let res = interface_control
-            .transmit(
-                &mut tx_buffer[..written],
-                &TxParameters {
-                    rate: WiFiRate::PhyRate24M,
-                    ..LMacInterfaceControl::DEFAULT_TX_PARAMETERS
-                },
-                true,
-            )
-            .await;
-        if let Err(err) = res {
-            trace!(
-                "Failed to send MSDU to {}, with TX error: {:?}.",
-                ethernet_frame.dst_addr(),
-                err
-            );
-        }
+        let _ = tx_endpoint.transmit_edca(
+            EdcaAccessCategory::default(),
+            tx_buffer,
+            written,
+            TxPlcpParameters {
+                rate: OfdmRate::Mbits12.into(),
+                ..Default::default()
+            },
+            TxMacParameters::default(),
+            RetryBehaviour::RetryUntil(7),
+        );
         trace!(
             "AWDL MSDU TX. Peer: {} Length: {} bytes",
             destination_address,
@@ -141,8 +132,8 @@ impl AwdlMsduTxRunner<'_, '_> {
 
             Self::transmit_frame(
                 msdu_buffer,
-                self.interface_control,
                 self.common_resources,
+                self.tx_endpoint,
                 &mut data_frame_sequence_number,
             )
             .await;

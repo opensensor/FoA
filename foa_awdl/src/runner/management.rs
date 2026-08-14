@@ -16,10 +16,7 @@ use awdl_frame_parser::{
 use defmt_or_log::trace;
 use embassy_futures::select::{select4, Either4};
 use embassy_time::{Duration, Instant, Ticker, Timer};
-use foa::{
-    esp_wifi_hal::{TxErrorBehaviour, TxParameters, WiFiRate},
-    LMacInterfaceControl,
-};
+use foa::{esp_wifi_hal::prelude::*, LMacInterfaceControl, TxEndpoint};
 use ieee80211::{
     common::TU,
     mac_parser::{MACAddress, BROADCAST, ZERO},
@@ -39,6 +36,7 @@ use crate::{
 pub struct AwdlManagementRunner<'foa, 'vif> {
     pub interface_control: &'vif LMacInterfaceControl<'foa>,
     pub common_resources: &'vif CommonResources,
+    pub tx_endpoint: &'vif TxEndpoint<'foa>,
 }
 impl AwdlManagementRunner<'_, '_> {
     /// Serialize an action frame with the specified address and subtype.
@@ -49,7 +47,7 @@ impl AwdlManagementRunner<'_, '_> {
         address: [u8; 6],
         af_type: AWDLActionFrameSubType,
     ) {
-        let mut tx_buffer = self.interface_control.alloc_tx_buf().await;
+        let mut tx_buffer = self.tx_endpoint.alloc_tx_buf().await;
         let address = MACAddress(address);
         let awdl_frame = RawVendorSpecificActionFrame {
             header: ManagementFrameHeader {
@@ -62,7 +60,10 @@ impl AwdlManagementRunner<'_, '_> {
                 oui: APPLE_OUI,
                 payload: AWDLActionFrame::<[AWDLTLV<'_, Empty<MACAddress>, Empty<AWDLStr<'_>>>; 8]> {
                     target_tx_time: core::time::Duration::from_micros(
-                        self.interface_control.mac_time() as u64,
+                        self.interface_control
+                            .mac_time()
+                            .duration_since_epoch()
+                            .as_micros(),
                     ),
                     phy_tx_time: core::time::Duration::from_micros(0),
                     subtype: af_type,
@@ -144,19 +145,27 @@ impl AwdlManagementRunner<'_, '_> {
         // We transmit using the 12 Mbit/s OFDM PHY, driver sequence number override and drop the
         // transmittion if it fails.
         let _ = self
-            .interface_control
-            .transmit_with_hook(
+            .tx_endpoint
+            .transmit_beacon_with_hook(
                 &mut tx_buffer[..written],
-                &TxParameters {
-                    rate: WiFiRate::PhyRate12M,
-                    override_seq_num: true,
-                    tx_error_behaviour: TxErrorBehaviour::Drop,
+                TxPlcpParameters {
+                    rate: OfdmRate::Mbits12.into(),
                     ..Default::default()
                 },
-                false,
+                TxMacParameters {
+                    wait_for_ack: false,
+                    override_seq_num: true,
+                    ..Default::default()
+                },
                 |buffer| {
                     buffer[32..36].copy_from_slice(
-                        self.interface_control.mac_time().to_le_bytes().as_slice(),
+                        (self
+                            .interface_control
+                            .mac_time()
+                            .duration_since_epoch()
+                            .as_micros() as u32)
+                            .to_le_bytes()
+                            .as_slice(),
                     );
                 },
             )

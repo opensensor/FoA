@@ -4,35 +4,36 @@ use heapless::index_map::FnvIndexMap;
 use ieee80211::{common::AssociationID, mac_parser::MACAddress};
 
 use foa::{
-    esp_wifi_hal::WiFiRate,
-    util::operations::{deauthenticate, ScanConfig},
+    esp_wifi_hal::prelude::*,
+    util::{
+        operations::{ScanConfig, deauthenticate},
+        random_mac_address,
+    },
 };
-use rand_core::RngCore;
 
 use crate::{
+    ConnectionConfig, SecurityConfig, StaTxRx,
+    bss::{BSS, Credentials},
     connection_state::{ConnectionInfo, ConnectionState, DisconnectionReason},
     operations::{
-        connect::{self, ConnectionParameters}, scan::{enumerate_bss, search_for_bss, BSS}
+        connect::{self, ConnectionParameters},
+        scan::{self},
     },
-    rsn::Credentials,
     rx_router::StaRxRouterEndpoint,
-    ConnectionConfig, SecurityConfig, StaTxRx,
 };
 
 use super::StaError;
 
 /// This provides control over the STA interface.
-pub struct StaControl<'foa, 'vif, Rng: RngCore> {
+pub struct StaControl<'foa, 'vif> {
     // Low level RX/TX.
     pub(crate) rx_router_endpoint: StaRxRouterEndpoint<'foa, 'vif>,
     pub(crate) sta_tx_rx: &'vif StaTxRx<'foa, 'vif>,
 
     // Misc.
     pub(crate) mac_address: MACAddress,
-    /// Entropy source for the STA implementation.
-    pub(crate) rng: Rng,
 }
-impl<Rng: RngCore + Clone> StaControl<'_, '_, Rng> {
+impl<'foa, 'vif> StaControl<'foa, 'vif> {
     /// Set the MAC address for the STA interface.
     pub fn set_mac_address(&mut self, mac_address: [u8; 6]) -> Result<(), StaError> {
         if self.sta_tx_rx.connection_state.connection_info().is_some() {
@@ -46,42 +47,55 @@ impl<Rng: RngCore + Clone> StaControl<'_, '_, Rng> {
     ///
     /// This will also return the MAC address.
     pub fn randomize_mac_address(&mut self) -> Result<[u8; 6], StaError> {
-        let mut mac_address = [0x00; 6];
-        self.rng.fill_bytes(mac_address.as_mut_slice());
-        // By clearing the LSB of the first octet, we ensure that the local bit isn't set.
-        mac_address[0] &= !(1);
+        let mac_address = random_mac_address();
         self.set_mac_address(mac_address).map(|_| mac_address)
     }
 
     /// Scan for networks.
     ///
     /// Invalid channels will cause an error to be returned.
-    pub async fn scan<'a, const MAX_ESS: usize>(
-        &'a mut self,
-        scan_config: Option<ScanConfig<'a>>,
-        found_bss: &'a mut FnvIndexMap<[u8; 6], BSS, MAX_ESS>,
-    ) -> Result<(), StaError> {
-        enumerate_bss(
+    pub fn scan<'params, const MAX_ESS: usize>(
+        &'params mut self,
+        scan_config: Option<ScanConfig<'params>>,
+        found_bss: &'params mut FnvIndexMap<[u8; 6], BSS, MAX_ESS>,
+    ) -> impl Future<Output = Result<(), StaError>> {
+        scan::enumerate_bss(
             self.sta_tx_rx,
             &mut self.rx_router_endpoint,
             scan_config,
             found_bss,
         )
-        .await
+    }
+    #[cfg(feature = "alloc")]
+    /// Scan continuously for networks and run the call back whenever one is found.
+    ///
+    /// When the callback returns false the scan will be stopped and the future finishes.
+    pub fn scan_continuously<'params>(
+        &'params mut self,
+        scan_config: Option<ScanConfig<'params>>,
+        found_bss: &'params mut alloc::collections::BTreeMap<[u8; 6], BSS>,
+        bss_found_cb: fn(&BSS) -> bool,
+    ) -> impl Future<Output = Result<(), StaError>> + use<'foa, 'vif, 'params> {
+        scan::scan_continuously(
+            self.sta_tx_rx,
+            &mut self.rx_router_endpoint,
+            scan_config,
+            found_bss,
+            bss_found_cb,
+        )
     }
     /// Look for a specific ESS and break once the first match is found.
-    pub async fn find_ess<'a>(
-        &'a mut self,
-        scan_config: Option<ScanConfig<'a>>,
-        ssid: &str,
-    ) -> Result<BSS, StaError> {
-        search_for_bss(
+    pub fn find_ess<'params>(
+        &'params mut self,
+        scan_config: Option<ScanConfig<'params>>,
+        ssid: &'params str,
+    ) -> impl Future<Output = Result<BSS, StaError>> + use<'foa, 'vif, 'params> {
+        scan::search_for_bss(
             self.sta_tx_rx,
             &mut self.rx_router_endpoint,
             scan_config,
             ssid,
         )
-        .await
     }
     /// Connect to a network.
     ///
@@ -110,15 +124,17 @@ impl<Rng: RngCore + Clone> StaControl<'_, '_, Rng> {
             &mut self.rx_router_endpoint,
             &bss,
             &ConnectionParameters {
-                phy_rate: self.sta_tx_rx.phy_rate(),
                 config: connection_config,
                 own_address: self.mac_address,
                 credentials,
             },
-            self.rng.clone(),
         )
         .await?;
-        debug!("Successfully connected to {} : \"{}\"", bss.bssid, bss.ssid.as_str());
+        debug!(
+            "Successfully connected to {} : \"{}\"",
+            bss.bssid,
+            bss.ssid.as_str()
+        );
         self.sta_tx_rx
             .connection_state
             .signal_state(ConnectionState::Connected(ConnectionInfo {
@@ -141,12 +157,12 @@ impl<Rng: RngCore + Clone> StaControl<'_, '_, Rng> {
         let bss = self.find_ess(None, ssid).await?;
         self.connect(bss, connection_config, credentials).await
     }
-    async fn disconnect_internal(
+    fn disconnect_internal(
         &mut self,
         ConnectionInfo {
             bss, own_address, ..
         }: &ConnectionInfo,
-    ) {
+    ) -> impl Future {
         // NOTE: The channel is already unlocked here, but since there's no await-point between
         // unlocking the channel and transmitting the deauth, no other interface could attempt to
         // lock it before we're done here.
@@ -155,13 +171,12 @@ impl<Rng: RngCore + Clone> StaControl<'_, '_, Rng> {
             .signal_state(ConnectionState::Disconnected(DisconnectionReason::User));
         self.sta_tx_rx.reset_phy_rate();
         deauthenticate(
-            self.sta_tx_rx.interface_control,
+            self.sta_tx_rx.tx_endpoint,
             bss.bssid,
             *own_address,
             true,
             self.sta_tx_rx.phy_rate(),
         )
-        .await;
     }
     /// Disconnect from the current network.
     pub async fn disconnect(&mut self) -> Result<(), StaError> {
@@ -184,11 +199,11 @@ impl<Rng: RngCore + Clone> StaControl<'_, '_, Rng> {
             .map_connection_info(|connection_info| connection_info.aid)
     }
     /// Get the currently used PHY rate.
-    pub fn phy_rate(&self) -> WiFiRate {
+    pub fn phy_rate(&self) -> TxPhyRate {
         self.sta_tx_rx.phy_rate()
     }
     /// Override the PHY rate.
-    pub fn override_phy_rate(&self, phy_rate: WiFiRate) {
+    pub fn override_phy_rate(&self, phy_rate: TxPhyRate) {
         self.sta_tx_rx.set_phy_rate(phy_rate);
     }
 }

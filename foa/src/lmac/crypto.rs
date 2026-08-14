@@ -1,14 +1,11 @@
-use core::{sync::atomic::Ordering, usize};
+use core::cell::RefCell;
 
-use esp_wifi_hal::{CipherParameters, WiFi, WiFiResult};
+use embassy_sync::blocking_mutex;
+use esp_wifi_hal::prelude::*;
 use ieee80211::macro_bits::{bit, check_bit};
-use portable_atomic::AtomicUsize;
-
-use super::SharedLMacState;
-
 /// A cryptographic key slot.
 pub struct KeySlot<'res> {
-    pub(crate) shared_state: &'res SharedLMacState,
+    pub(crate) key_slot_manager: &'res blocking_mutex::NoopMutex<RefCell<KeySlotManager>>,
     pub(crate) key_slot: u8,
     pub(crate) interface: u8,
 }
@@ -26,49 +23,56 @@ impl KeySlot<'_> {
         key_id: u8,
         address: [u8; 6],
         cipher_parameters: CipherParameters<'_>,
-    ) -> WiFiResult<()> {
-        self.shared_state.wifi.set_key(
-            self.key_slot as usize,
-            self.interface as usize,
-            key_id,
-            address,
-            cipher_parameters,
-        )
+    ) -> Result<(), CryptoError> {
+        self.key_slot_manager.lock(|ref_cell| {
+            ref_cell.borrow_mut().crypto_controller.set_key(
+                self.key_slot as _,
+                self.interface as _,
+                key_id,
+                address,
+                cipher_parameters,
+            )
+        })
     }
 }
 impl Drop for KeySlot<'_> {
     fn drop(&mut self) {
-        let _ = self.shared_state.wifi.delete_key(self.key_slot as usize);
-        self.shared_state.key_slot_manager.release_key_slot(self.key_slot);
+        self.key_slot_manager.lock(|ref_cell| {
+            let mut key_slot_manager = ref_cell.borrow_mut();
+            let _ = key_slot_manager
+                .crypto_controller
+                .delete_key(self.key_slot());
+            key_slot_manager.release_key_slot(self.key_slot());
+        });
         debug!("Key Slot {} was released.", self.key_slot);
     }
 }
-pub struct KeySlotManager {
+pub(crate) struct KeySlotManager {
     /// A bit mask indicating, which slots are free.
-    key_slot_state: AtomicUsize,
+    key_slot_state: u32,
+    /// Crypto controller of the Wi-Fi driver.
+    pub(crate) crypto_controller: CryptoController<'static>,
 }
 impl KeySlotManager {
     /// Create a new key slot manager.
-    pub const fn new() -> Self {
+    pub const fn new(crypto_controller: CryptoController<'static>) -> Self {
         Self {
-            key_slot_state: AtomicUsize::new(usize::MAX)
+            key_slot_state: u32::MAX,
+            crypto_controller,
         }
     }
     /// Acquire a free key slot.
-    pub fn acquire_key_slot(&self) -> Option<u8> {
+    pub fn acquire_key_slot(&mut self) -> Option<usize> {
         // We don't have to worry about race conditions here, since this function is sync and the
         // entire stack runs on one core.
-        let key_slot_state = self.key_slot_state.load(Ordering::Relaxed);
-        (0..WiFi::KEY_SLOT_COUNT as u8)
-            .filter(|i| check_bit!(key_slot_state, bit!(i)))
-            .next()
+        (0..KEY_SLOT_COUNT).find(|i| check_bit!(self.key_slot_state, bit!(i)))
             .inspect(|key_slot| {
-                self.key_slot_state
-                    .store(key_slot_state & !bit!(key_slot), Ordering::Relaxed);
+                self.key_slot_state &= !bit!(*key_slot) as u32;
             })
     }
     /// Release a key slot.
-    fn release_key_slot(&self, key_slot: u8) {
-        self.key_slot_state.fetch_or(bit!(key_slot), Ordering::Relaxed);
+    fn release_key_slot(&mut self, key_slot: usize) {
+        self.key_slot_state |= bit!(key_slot) as u32;
+        let _ = self.crypto_controller.delete_key(key_slot);
     }
 }

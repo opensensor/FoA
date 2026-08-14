@@ -1,46 +1,34 @@
 #![no_std]
 #![no_main]
 
-use defmt::info;
 use embassy_executor::Spawner;
 use embassy_net::{
+    DhcpConfig, Runner as NetRunner, StackResources as NetStackResources,
     dns::DnsSocket,
     tcp::client::{TcpClient, TcpClientState},
-    DhcpConfig, Runner as NetRunner, StackResources as NetStackResources,
 };
-use embassy_time::Timer;
 use embedded_io_async::Read;
-use esp_backtrace as _;
 use esp_hal::{
-    rng::Rng,
+    Async,
+    clock::CpuClock,
+    interrupt::software::SoftwareInterruptControl,
     timer::timg::TimerGroup,
     uart::{self, Uart},
-    Async,
 };
-use esp_println as _;
-use foa::{
-    FoAResources, FoARunner, VirtualInterface,
-};
-use foa_sta::{Credentials, StaNetDevice, StaResources, StaRunner};
+use examples::{get_credentials, mk_static};
+use foa::{FoAResources, FoARunner, VirtualInterface};
+use foa_sta::{StaNetDevice, StaResources, StaRunner};
+use log::info;
 use reqwless::{client::HttpClient, request::Method, response::BodyReader};
 
 const SSID: &str = env!("SSID");
 
-macro_rules! mk_static {
-    ($t:ty,$val:expr) => {{
-        static STATIC_CELL: static_cell::StaticCell<$t> = static_cell::StaticCell::new();
-        #[deny(unused_attributes)]
-        let x = STATIC_CELL.uninit().write(($val));
-        x
-    }};
-}
-
 #[embassy_executor::task]
-async fn foa_task(mut foa_runner: FoARunner<'static>) -> ! {
+async fn foa_task(mut foa_runner: FoARunner<'static>) {
     foa_runner.run().await
 }
 #[embassy_executor::task]
-async fn sta_task(mut sta_runner: StaRunner<'static, 'static>) -> ! {
+async fn sta_task(mut sta_runner: StaRunner<'static, 'static>) {
     sta_runner.run().await
 }
 #[embassy_executor::task]
@@ -49,27 +37,22 @@ async fn net_task(mut net_runner: NetRunner<'static, StaNetDevice<'static>>) -> 
 }
 #[esp_rtos::main]
 async fn main(spawner: Spawner) {
-    esp_bootloader_esp_idf::esp_app_desc!();
-    let peripherals = esp_hal::init(esp_hal::Config::default());
+    let peripherals = esp_hal::init(esp_hal::Config::default().with_cpu_clock(CpuClock::max()));
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
-    esp_rtos::start(timg0.timer0);
+    let sw_interrupt = SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
+    esp_rtos::start(timg0.timer0, sw_interrupt.software_interrupt0);
 
     let stack_resources = mk_static!(FoAResources, FoAResources::new());
-    let ([sta_vif, ..], foa_runner) = foa::init(
-        stack_resources,
-        peripherals.WIFI,
-        peripherals.ADC2,
-    );
-    spawner.spawn(foa_task(foa_runner)).unwrap();
+    let ([sta_vif, ..], foa_runner) = foa::init(stack_resources, peripherals.WIFI);
+    spawner.spawn(foa_task(foa_runner).unwrap());
 
     let sta_resources = mk_static!(StaResources<'static>, StaResources::default());
     let (mut sta_control, sta_runner, net_device) = foa_sta::new_sta_interface(
         mk_static!(VirtualInterface<'static>, sta_vif),
         sta_resources,
-        Rng::new(),
     );
-    spawner.spawn(sta_task(sta_runner)).unwrap();
+    spawner.spawn(sta_task(sta_runner).unwrap());
 
     let _ = sta_control.randomize_mac_address();
 
@@ -80,13 +63,12 @@ async fn main(spawner: Spawner) {
         net_stack_resources,
         1234,
     );
-    spawner.spawn(net_task(net_runner)).unwrap();
+    spawner.spawn(net_task(net_runner).unwrap());
 
-    defmt::unwrap!(
-        sta_control
-            .connect_by_ssid(SSID, None, Some(Credentials::Passphrase(env!("PASSWORD"))))
-            .await
-    );
+    sta_control
+        .connect_by_ssid(SSID, None, get_credentials())
+        .await
+        .unwrap();
 
     info!("Connected to {}.", SSID);
 
@@ -102,8 +84,6 @@ async fn main(spawner: Spawner) {
     let mut http_client = HttpClient::new(&tcp_client, &dns_client);
 
     let rx_buf = mk_static!([u8; 8192], [0; 8192]);
-
-    let parrot_buffer = mk_static!([u8; 1119], [0u8; 1119]);
     #[cfg(feature = "esp32")]
     let (rx_pin, tx_pin) = (peripherals.GPIO3, peripherals.GPIO1);
     #[cfg(feature = "esp32s2")]
@@ -113,7 +93,9 @@ async fn main(spawner: Spawner) {
         .with_rx(rx_pin)
         .with_tx(tx_pin)
         .into_async();
-    defmt::flush();
+
+    let parrot_buffer = mk_static!([u8; 1500], [0u8; 1500]);
+
     loop {
         let mut request = http_client
             .request(Method::GET, "http://parrot.live/")
@@ -125,15 +107,16 @@ async fn main(spawner: Spawner) {
         };
 
         loop {
-            let Ok(_) = chunked_reader.read_exact(parrot_buffer).await else {
+            let Ok(read) = chunked_reader.read(parrot_buffer).await else {
                 break;
             };
             let _ = <Uart<'static, Async> as embedded_io_async::Write>::write_all(
                 &mut uart,
-                parrot_buffer,
+                &parrot_buffer[..read],
             )
             .await;
-            let _ = uart.flush();
+            let _ = uart.flush_async().await;
+            esp_println::println!();
         }
     }
 }

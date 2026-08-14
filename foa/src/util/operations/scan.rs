@@ -1,10 +1,10 @@
 use embassy_time::{Duration, WithTimeout};
-use esp_wifi_hal::ScanningMode;
+use esp_wifi_hal::prelude::*;
 use ieee80211::{match_frames, mgmt_frame::BeaconFrame};
 
 use crate::{
-    util::rx_router::{HasScanOperation, RxRouterEndpoint, RxRouterScopedOperation},
     LMacError, LMacInterfaceControl, ReceivedFrame,
+    util::rx_router::{HasScanOperation, RxRouterEndpoint, RxRouterScopedOperation},
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -80,6 +80,7 @@ pub async fn scan<'foa, 'vif, 'params, Operation: HasScanOperation, Res>(
     rx_router_endpoint: &'params mut RxRouterEndpoint<'foa, 'vif, Operation>,
     mut rx_cb: impl FnMut(BeaconFrame<'_>, &ReceivedFrame<'foa>, u8) -> PostChannelScanAction<Res>,
     scan_config: Option<ScanConfig<'_>>,
+    continuous: bool,
 ) -> Result<Option<Res>, LMacError> {
     // We begin the off channel operation.
     let mut off_channel_operation = interface_control
@@ -92,7 +93,7 @@ pub async fn scan<'foa, 'vif, 'params, Operation: HasScanOperation, Res>(
     // Determine the channels, that should be scanned through the strategy.
     let channels = match scan_config.strategy {
         ScanStrategy::Single(channel) => &[channel],
-        ScanStrategy::CurrentChannel => &[interface_control.get_current_channel()],
+        ScanStrategy::CurrentChannel => &[interface_control.get_channel()],
         ScanStrategy::Linear => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13].as_slice(),
         ScanStrategy::NonOverlappingFirst => [1, 6, 11, 2, 7, 12, 3, 8, 13, 4, 9, 5, 10].as_slice(),
         ScanStrategy::Custom(channels) => channels,
@@ -107,15 +108,20 @@ pub async fn scan<'foa, 'vif, 'params, Operation: HasScanOperation, Res>(
 
     let mut res = None;
 
-    // Loop through channels.
-    for channel in channels {
-        off_channel_operation.set_channel(*channel)?;
-        let post_channel_scan_action = scan_on_channel(&router_operation, *channel, &mut rx_cb)
-            .with_timeout(scan_config.channel_remain_time)
-            .await
-            .unwrap_or(PostChannelScanAction::Continue);
-        if let PostChannelScanAction::Stop(scan_res) = post_channel_scan_action {
-            res = Some(scan_res);
+    loop {
+        // Loop through channels.
+        for channel in channels {
+            off_channel_operation.set_channel(*channel)?;
+            let post_channel_scan_action = scan_on_channel(&router_operation, *channel, &mut rx_cb)
+                .with_timeout(scan_config.channel_remain_time)
+                .await
+                .unwrap_or(PostChannelScanAction::Continue);
+            if let PostChannelScanAction::Stop(scan_res) = post_channel_scan_action {
+                res = Some(scan_res);
+                break;
+            }
+        }
+        if !continuous {
             break;
         }
     }

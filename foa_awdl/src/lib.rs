@@ -43,8 +43,7 @@ use core::net::Ipv6Addr;
 use embassy_net_driver_channel::driver::HardwareAddress;
 use embassy_sync::channel::DynamicReceiver;
 use esp_config::esp_config_int;
-use foa::{esp_wifi_hal::RxFilterBank, VirtualInterface};
-use rand_core::RngCore;
+use foa::{esp_wifi_hal::prelude::RxFilterBank, VirtualInterface};
 
 mod control;
 mod event;
@@ -81,21 +80,19 @@ pub type AwdlEventQueueReceiver<'a> = DynamicReceiver<'a, AwdlEvent>;
 /// Initialize and AWDL interface.
 ///
 /// You'll get a control interface, a runner, a net device and a receiver for the event queue.
-pub fn new_awdl_interface<'foa, 'vif, Rng: RngCore + Clone>(
+pub fn new_awdl_interface<'foa, 'vif>(
     virtual_interface: &'vif mut VirtualInterface<'foa>,
     resources: &'vif mut AwdlResources,
-    rng: Rng,
 ) -> (
-    AwdlControl<'foa, 'vif, Rng>,
+    AwdlControl<'foa, 'vif>,
     AwdlRunner<'foa, 'vif>,
     AwdlNetDevice<'vif>,
     AwdlEventQueueReceiver<'vif>,
 ) {
     virtual_interface.reset();
-    let (interface_control, rx_queue) = virtual_interface.split();
+    let (interface_control, interface_rx_endpoint, tx_endpoint) = virtual_interface.split();
 
-    interface_control.set_filter_parameters(RxFilterBank::BSSID, AWDL_BSSID, None);
-    interface_control.set_filter_status(RxFilterBank::BSSID, true);
+    interface_control.set_filter(RxFilterBank::Bssid, AWDL_BSSID);
 
     let (net_runner, net_device) = embassy_net_driver_channel::new(
         &mut resources.net_state,
@@ -105,14 +102,14 @@ pub fn new_awdl_interface<'foa, 'vif, Rng: RngCore + Clone>(
     (
         AwdlControl {
             interface_control,
-            rng,
             common_resources: &resources.common_resources,
             channel: 6,
             mac_address: interface_control.get_factory_mac_for_interface(),
         },
         AwdlRunner::new(
             interface_control,
-            rx_queue,
+            interface_rx_endpoint,
+            tx_endpoint,
             &resources.common_resources,
             net_runner,
         ),

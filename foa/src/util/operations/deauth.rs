@@ -1,18 +1,22 @@
 use core::marker::PhantomData;
 
-use crate::{
-    esp_wifi_hal::{TxParameters, WiFiRate},
-    LMacInterfaceControl,
+use crate::{PendingTransmission, RetryBehaviour, TxEndpoint};
+use esp_wifi_hal::{
+    ll::EdcaAccessCategory,
+    prelude::{TxMacParameters, TxPhyRate, TxPlcpParameters},
 };
 use ieee80211::{
     common::{IEEE80211Reason, SequenceControl},
     element_chain,
     mac_parser::MACAddress,
-    mgmt_frame::{body::DeauthenticationBody, DeauthenticationFrame, ManagementFrameHeader},
+    mgmt_frame::{DeauthenticationFrame, ManagementFrameHeader, body::DeauthenticationBody},
     scroll::Pwrite,
 };
 
 /// This will transmit a deauthentication frame.
+///
+/// While this function is async, it will not wait for the transmission to complete.
+/// If you wish to do that, you may use the [PendingTransmission] to wait for it.
 ///
 /// The value of the RA and TA fields are shown in the table below.
 ///
@@ -20,14 +24,14 @@ use ieee80211::{
 /// -- | -- | --
 /// `true` | BSSID | STA address
 /// `false` | STA address | BSSID
-pub async fn deauthenticate(
-    interface_control: &LMacInterfaceControl<'_>,
+pub async fn deauthenticate<'a>(
+    tx_endpoint: &'a TxEndpoint<'_>,
     bssid: MACAddress,
     sta_address: MACAddress,
     to_ap: bool,
-    phy_rate: WiFiRate,
-) {
-    let mut tx_buf = interface_control.alloc_tx_buf().await;
+    rate: TxPhyRate,
+) -> PendingTransmission<'a> {
+    let mut tx_buf = tx_endpoint.alloc_tx_buf().await;
     let (receiver_address, transmitter_address) = if to_ap {
         (bssid, sta_address)
     } else {
@@ -52,14 +56,19 @@ pub async fn deauthenticate(
             0,
         )
         .unwrap();
-    let _ = interface_control
-        .transmit(
-            &mut tx_buf[..written],
-            &TxParameters {
-                rate: phy_rate,
-                ..LMacInterfaceControl::DEFAULT_TX_PARAMETERS
-            },
-            true,
-        )
-        .await;
+    tx_endpoint.transmit_edca(
+        EdcaAccessCategory::default(),
+        tx_buf,
+        written,
+        TxPlcpParameters {
+            rate,
+            ..Default::default()
+        },
+        TxMacParameters {
+            wait_for_ack: true,
+            override_seq_num: true,
+            ..Default::default()
+        },
+        RetryBehaviour::RetryUntil(7),
+    )
 }

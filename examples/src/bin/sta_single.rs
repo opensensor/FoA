@@ -1,91 +1,80 @@
 #![no_std]
 #![no_main]
 
-use defmt::info;
 use embassy_executor::Spawner;
 use embassy_net::{
+    Runner as NetRunner, StackResources as NetStackResources,
     dns::{DnsQueryType, DnsSocket},
     udp::{PacketMetadata, UdpSocket},
-    DhcpConfig, Runner as NetRunner, StackResources as NetStackResources,
 };
 use embassy_time::Timer;
+use log::info;
 
-use esp_backtrace as _;
-use esp_hal::{rng::Rng, timer::timg::TimerGroup};
-use esp_println as _;
+use esp_hal::{interrupt::software::SoftwareInterruptControl, rng::Rng, timer::timg::TimerGroup};
 
-use foa::{
-    util::operations::{ScanConfig, ScanStrategy},
-    FoAResources, FoARunner, VirtualInterface,
-};
-use foa_sta::{Credentials, StaNetDevice, StaResources, StaRunner};
-
-macro_rules! mk_static {
-    ($t:ty,$val:expr) => {{
-        static STATIC_CELL: static_cell::StaticCell<$t> = static_cell::StaticCell::new();
-        #[deny(unused_attributes)]
-        let x = STATIC_CELL.uninit().write(($val));
-        x
-    }};
-}
+use examples::{get_credentials, get_embassy_net_config, mk_static};
+use foa::{FoAResources, FoARunner, VirtualInterface};
+use foa_sta::{ConnectionConfig, StaNetDevice, StaResources, StaRunner};
 
 const SSID: &str = env!("SSID");
 
 #[embassy_executor::task]
-async fn foa_task(mut foa_runner: FoARunner<'static>) -> ! {
+async fn foa_task(mut foa_runner: FoARunner<'static>) {
     foa_runner.run().await
 }
 #[embassy_executor::task]
-async fn sta_task(mut sta_runner: StaRunner<'static, 'static>) -> ! {
+async fn sta_task(mut sta_runner: StaRunner<'static, 'static>) {
     sta_runner.run().await
 }
 #[embassy_executor::task]
 async fn net_task(mut net_runner: NetRunner<'static, StaNetDevice<'static>>) -> ! {
     net_runner.run().await
 }
-#[esp_hal_embassy::main]
+#[esp_rtos::main]
 async fn main(spawner: Spawner) {
-    esp_bootloader_esp_idf::esp_app_desc!();
     let peripherals = esp_hal::init(esp_hal::Config::default());
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
-    esp_hal_embassy::init(timg0.timer0);
+    let sw_interrupt = SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
+    esp_rtos::start(timg0.timer0, sw_interrupt.software_interrupt0);
+    examples::init();
 
     let stack_resources = mk_static!(FoAResources, FoAResources::new());
-    let ([sta_vif, ..], foa_runner) = foa::init(
-        stack_resources,
-        peripherals.WIFI,
-        peripherals.ADC2,
-    );
-    spawner.spawn(foa_task(foa_runner)).unwrap();
+    let ([sta_vif, ..], foa_runner) = foa::init(stack_resources, peripherals.WIFI);
+    spawner.spawn(foa_task(foa_runner).unwrap());
 
     let sta_resources = mk_static!(StaResources<'static>, StaResources::default());
     let (mut sta_control, sta_runner, net_device) = foa_sta::new_sta_interface(
         mk_static!(VirtualInterface<'static>, sta_vif),
         sta_resources,
-        Rng::new(peripherals.RNG),
     );
-    spawner.spawn(sta_task(sta_runner)).unwrap();
+    spawner.spawn(sta_task(sta_runner).unwrap());
 
     let mac_address = sta_control.randomize_mac_address().unwrap();
-    info!("Using MAC address: {:#x}", mac_address);
+    info!("Using MAC address: {:x?}", mac_address);
 
     let net_stack_resources = mk_static!(NetStackResources<3>, NetStackResources::new());
     let (net_stack, net_runner) = embassy_net::new(
         net_device,
-        embassy_net::Config::dhcpv4(DhcpConfig::default()),
+        get_embassy_net_config(),
         net_stack_resources,
-        1234,
+        Rng::new().random() as u64,
     );
 
-    defmt::unwrap!(
-        sta_control
-            .connect_by_ssid(SSID, None, Some(Credentials::Passphrase(env!("PASSWORD"))))
-            .await
-    );
+    sta_control
+        .connect_by_ssid(
+            SSID,
+            Some(ConnectionConfig {
+                beacon_timeout: None,
+                ..Default::default()
+            }),
+            get_credentials(),
+        )
+        .await
+        .unwrap();
     info!("Connected successfully.");
 
-    spawner.spawn(net_task(net_runner)).unwrap();
+    spawner.spawn(net_task(net_runner).unwrap());
     // Wait for DHCP, not necessary when using static IP
     info!("waiting for DHCP...");
     net_stack.wait_config_up().await;
@@ -115,6 +104,6 @@ async fn main(spawner: Spawner) {
             .send_to([0xff; 1].as_slice(), endpoint)
             .await
             .unwrap();
-        Timer::after_secs(1).await;
+        Timer::after_millis(300).await;
     }
 }

@@ -31,30 +31,34 @@
 //! (Frostie314159): The reason this will take a while is, because I worked on WPA2 for two months
 //! straight to get it working and sorta need to take my mind of it for a while.
 
-use core::cell::{Cell, RefCell};
+use core::cell::Cell;
 
 use connection_state::ConnectionStateTracker;
-use embassy_net::driver::HardwareAddress;
-use embassy_sync::blocking_mutex::NoopMutex;
+use embassy_net_driver::HardwareAddress;
 use esp_config::esp_config_int;
 use ieee80211::{common::IEEE80211StatusCode, mac_parser::MACAddress};
 
+#[cfg(feature = "rsn")]
+use {core::cell::RefCell, embassy_sync::blocking_mutex::NoopMutex};
+
 use embassy_net_driver_channel::{self as ch};
 use foa::{
-    esp_wifi_hal::WiFiRate, util::rx_router::RxRouter, LMacError, LMacInterfaceControl,
-    VirtualInterface,
+    LMacError, LMacInterfaceControl, TxEndpoint, VirtualInterface, esp_wifi_hal::prelude::*,
+    util::rx_router::RxRouter,
 };
+
+#[cfg(feature = "alloc")]
+extern crate alloc;
 
 #[macro_use]
 extern crate defmt_or_log;
 
 mod control;
 pub use control::*;
-pub use operations::scan::BSS;
 
+mod bss;
+pub use bss::*;
 mod runner;
-use rand_core::RngCore;
-use rsn::CryptoState;
 pub use runner::StaRunner;
 use runner::{ConnectionRunner, RoutingRunner};
 mod operations;
@@ -62,8 +66,8 @@ mod rx_router;
 use rx_router::StaRxRouter;
 mod connection_state;
 pub use connection_state::ConnectionConfig;
+#[cfg(feature = "rsn")]
 mod rsn;
-pub use rsn::{Credentials, SecurityConfig};
 mod util;
 
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -113,32 +117,38 @@ pub const MTU: usize = 1514;
 pub(crate) struct StaTxRx<'foa, 'vif> {
     pub(crate) interface_control: &'vif LMacInterfaceControl<'foa>,
     pub(crate) connection_state: &'vif ConnectionStateTracker,
-    pub(crate) crypto_state: &'vif NoopMutex<RefCell<Option<CryptoState<'foa>>>>,
-    phy_rate: &'vif Cell<WiFiRate>,
+    pub(crate) tx_endpoint: &'vif TxEndpoint<'foa>,
+    #[cfg(feature = "rsn")]
+    pub(crate) crypto_state: &'vif NoopMutex<RefCell<Option<crate::rsn::CryptoState<'foa>>>>,
+    phy_rate: &'vif Cell<TxPhyRate>,
 }
 impl StaTxRx<'_, '_> {
     /// Reset the PHY rate.
     pub fn reset_phy_rate(&self) {
-        self.phy_rate.take();
+        self.phy_rate.set(OfdmRate::Mbits6.into());
     }
     /// Get the current PHY rate.
-    pub fn phy_rate(&self) -> WiFiRate {
+    pub fn phy_rate(&self) -> TxPhyRate {
         self.phy_rate.get()
     }
     /// Set the current PHY rate.
-    pub fn set_phy_rate(&self, phy_rate: WiFiRate) {
+    pub fn set_phy_rate(&self, phy_rate: TxPhyRate) {
         self.phy_rate.set(phy_rate);
     }
     /// Check if we are currently performing an off channel operation.
     pub fn in_off_channel_operation(&self) -> bool {
         self.interface_control.off_channel_operation_interface()
-            == Some(self.interface_control.get_filter_interface())
+            == Some(self.interface_control.interface())
     }
-    pub fn map_crypto_state<O, F: FnMut(&mut CryptoState<'_>) -> O>(&self, f: F) -> Option<O> {
+    #[cfg(feature = "rsn")]
+    pub fn map_crypto_state<O, F: FnMut(&mut rsn::CryptoState<'_>) -> O>(&self, f: F) -> Option<O> {
         self.crypto_state.lock(|cs| cs.borrow_mut().as_mut().map(f))
     }
     pub fn rsna_activated(&self) -> bool {
-        self.map_crypto_state(|_| {}).is_some()
+        #[cfg(feature = "rsn")]
+        return self.map_crypto_state(|_| {}).is_some();
+        #[cfg(not(feature = "rsn"))]
+        return false;
     }
 }
 
@@ -155,11 +165,12 @@ pub struct StaResources<'foa> {
 
     // State tracking.
     connection_state: ConnectionStateTracker,
-    phy_rate: Cell<WiFiRate>,
+    phy_rate: Cell<TxPhyRate>,
 
     // Misc.
     sta_tx_rx: Option<StaTxRx<'static, 'static>>,
-    crypto_state: NoopMutex<RefCell<Option<CryptoState<'foa>>>>,
+    #[cfg(feature = "rsn")]
+    crypto_state: NoopMutex<RefCell<Option<crate::rsn::CryptoState<'foa>>>>,
 }
 impl StaResources<'_> {
     /// Create new resources for the STA interface.
@@ -168,8 +179,9 @@ impl StaResources<'_> {
             rx_router: RxRouter::new(),
             channel_state: ch::State::new(),
             connection_state: ConnectionStateTracker::new(),
-            phy_rate: Cell::new(WiFiRate::PhyRate1ML),
+            phy_rate: Cell::new(TxPhyRate::Ofdm(OfdmRate::Mbits6)),
             sta_tx_rx: None,
+            #[cfg(feature = "rsn")]
             crypto_state: NoopMutex::new(RefCell::new(None)),
         }
     }
@@ -184,16 +196,15 @@ impl Default for StaResources<'_> {
 pub type StaNetDevice<'a> = embassy_net_driver_channel::Device<'a, MTU>;
 
 /// Initialize a new STA interface.
-pub fn new_sta_interface<'foa: 'vif, 'vif, Rng: RngCore + Clone>(
+pub fn new_sta_interface<'foa: 'vif, 'vif>(
     virtual_interface: &'vif mut VirtualInterface<'foa>,
     resources: &'vif mut StaResources<'foa>,
-    rng: Rng,
 ) -> (
-    StaControl<'foa, 'vif, Rng>,
+    StaControl<'foa, 'vif>,
     StaRunner<'foa, 'vif>,
     StaNetDevice<'vif>,
 ) {
-    let (interface_control, interface_rx_queue) = virtual_interface.split();
+    let (interface_control, interface_rx_endpoint, tx_endpoint) = virtual_interface.split();
     let mac_address = interface_control.get_factory_mac_for_interface();
     // Initialize embassy_net.
     let (net_runner, net_device) = ch::new(
@@ -213,6 +224,8 @@ pub fn new_sta_interface<'foa: 'vif, 'vif, Rng: RngCore + Clone>(
     .insert(StaTxRx {
         interface_control,
         connection_state: &resources.connection_state,
+        tx_endpoint,
+        #[cfg(feature = "rsn")]
         crypto_state: &resources.crypto_state,
         phy_rate: &resources.phy_rate,
     });
@@ -223,7 +236,6 @@ pub fn new_sta_interface<'foa: 'vif, 'vif, Rng: RngCore + Clone>(
             sta_tx_rx,
             mac_address: MACAddress::new(mac_address),
             rx_router_endpoint: foreground_endpoint,
-            rng,
         },
         StaRunner {
             tx_runner,
@@ -235,7 +247,7 @@ pub fn new_sta_interface<'foa: 'vif, 'vif, Rng: RngCore + Clone>(
             routing_runner: RoutingRunner {
                 rx_router_input,
                 sta_tx_rx,
-                interface_rx_queue,
+                interface_rx_endpoint,
                 rx_runner,
             },
         },

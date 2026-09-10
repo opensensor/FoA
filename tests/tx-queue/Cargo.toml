@@ -1,0 +1,18 @@
+[package]
+name = "foa-tx-queue-host-tests"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[features]
+small-pool = []
+
+[dependencies]
+embassy-sync = { version = "=0.8.0", features = ["std"] }
+futures-util = { version = "0.3.34", default-features = false }
+portable-atomic = "1.15.0"
+critical-section = { version = "1.2.0", features = ["std"] }
+log = "0.4.33"
+esp-wifi-hal = { package = "foa-test-radio", path = "radio" }

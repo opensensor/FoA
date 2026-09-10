@@ -1,0 +1,33 @@
+name: TX queue ownership
+
+on:
+  push:
+    paths:
+      - foa/src/tx_queue.rs
+      - foa/src/tx_buffer_management.rs
+      - tests/**
+      - .github/workflows/tx-queue.yml
+  pull_request:
+    paths:
+      - foa/src/tx_queue.rs
+      - foa/src/tx_buffer_management.rs
+      - tests/**
+      - .github/workflows/tx-queue.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  host-regressions:
+    runs-on: ubuntu-latest
+    env:
+      RUSTUP_TOOLCHAIN: 1.90.0
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tested host toolchain
+        run: rustup toolchain install 1.90.0 --profile minimal
+      - name: Default eight-buffer pool
+        run: tests/run-tx-queue.sh
+      - name: Three-buffer pool with release arithmetic
+        run: tests/run-tx-queue.sh --release --features small-pool

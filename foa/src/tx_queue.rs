@@ -141,7 +141,10 @@ impl TxQueueState {
     /// Increase the queue counter and get the previous value.
     const fn increase_queue_counter(&mut self) -> u64 {
         let counter = self.counter;
-        self.counter += 1;
+        // Wrapping would alias handle generations and break counter-derived
+        // ring indices when the configured capacity is not a power of two.
+        // Exhaustion is unreachable in practice; fail before mutating a slot.
+        self.counter = self.counter.checked_add(1).expect("TX queue generation counter exhausted");
 
         counter
     }
@@ -155,7 +158,10 @@ impl TxQueueState {
     }
     /// Has the internal counter looped over the provided counter value.
     const fn is_counter_out_of_bounds(&self, counter: u64) -> bool {
-        (self.counter - counter) >= TX_BUFFER_COUNT as u64
+        // `self.counter` is the next insertion, not the most recent one. A
+        // generation is still current when exactly N frames have been queued;
+        // insertion N+1 is the first one which can overwrite its slot.
+        (self.counter - counter) > TX_BUFFER_COUNT as u64
     }
 }
 
@@ -175,6 +181,7 @@ impl TxQueue {
         self.inner.lock(|rc| {
             let mut queue_state = rc.borrow_mut();
 
+            assert!(queue_state.capacity > 0, "TX queue capacity exhausted");
             let was_queue_empty = queue_state.is_empty();
 
             let next_slot_index = queue_state.next_slot_index();
@@ -184,6 +191,11 @@ impl TxQueue {
             queue_state.queue_items[next_slot_index]
                 .0
                 .set(TxQueueSlot::Pending(frame));
+            // Completion interest belongs to this generation. An earlier
+            // fire-and-forget or completed handle may have cleared the flag.
+            queue_state.queue_items[next_slot_index]
+                .2
+                .store(true, Ordering::Relaxed);
 
             // Prevents unnecessary wakes of the background task.
             if was_queue_empty {
@@ -235,7 +247,7 @@ impl<'res> TxQueueRunner<'res> {
                 let (
                     ref mut front_slot_cell, 
                     _, 
-                    ref return_data_expeceted
+                    _
                 ) = queue_state.queue_items[front_index];
                 match front_slot_cell.get_mut() {
                     TxQueueSlot::Empty | TxQueueSlot::ReturnDataAvailable(_) => {
@@ -253,7 +265,6 @@ impl<'res> TxQueueRunner<'res> {
                             (InProgressTransmission {
                                 tx_queue,
                                 index: front_index,
-                                return_data_expected: return_data_expeceted.load(Ordering::Relaxed),
                             }, pending_frame)
                         )
                     }
@@ -284,7 +295,6 @@ pub struct InProgressTransmission<'res> {
     tx_queue: &'res TxQueue,
     /// The queue slot, to which this transmission corresponds.
     index: usize,
-    return_data_expected: bool,
 }
 impl InProgressTransmission<'_> {
     /// Execute an active transmission.
@@ -298,29 +308,34 @@ impl InProgressTransmission<'_> {
                 &mut pending_frame.frame[..pending_frame.frame_length],
             )
             .await;
-        if self.return_data_expected {
-            self.finish(TxQueueSlot::ReturnDataAvailable(TxReturnData {
-                result,
-                frame: pending_frame.frame,
-                frame_length: pending_frame.frame_length,
-            }));
-        } else {
-            self.finish(TxQueueSlot::Empty);
-        }
+        self.finish(TxQueueSlot::ReturnDataAvailable(TxReturnData {
+            result,
+            frame: pending_frame.frame,
+            frame_length: pending_frame.frame_length,
+        }));
         core::mem::forget(self);
 
     }
     /// Finish the transmission, by updating the queue slot state and by calling the waker.
     fn finish(&self, new_slot_state: TxQueueSlot) {
-        self.tx_queue.inner.lock(|ref_cell| {
+        let discarded = self.tx_queue.inner.lock(|ref_cell| {
             let mut tx_queue_state = ref_cell.borrow_mut();
             tx_queue_state.capacity += 1;
-            tx_queue_state.queue_items[self.index].0.set(new_slot_state);
-            tx_queue_state.queue_items[self.index].1.wake();
-            tx_queue_state.queue_items[self.index]
-                .2
-                .store(true, Ordering::Relaxed);
-        })
+            let (slot, waker, return_data_expected) = &mut tx_queue_state.queue_items[self.index];
+            // The caller can cancel while the radio operation is awaiting its
+            // completion. Consult current interest, not a snapshot at pickup.
+            let discarded = if return_data_expected.load(Ordering::Relaxed) {
+                slot.set(new_slot_state);
+                None
+            } else {
+                slot.set(TxQueueSlot::Empty);
+                Some(new_slot_state)
+            };
+            waker.wake();
+            discarded
+        });
+        // Return an unclaimed TX buffer to its pool after releasing queue state.
+        drop(discarded);
     }
 }
 impl Drop for InProgressTransmission<'_> {
@@ -401,6 +416,10 @@ impl<'res> PendingTransmission<'res> {
                                 return_data,
                             )
                         }))
+                    } else if matches!(cell.get_mut(), TxQueueSlot::Empty) {
+                        // An aborted runner may have released this generation
+                        // without a completion. It cannot become ready later.
+                        Poll::Ready(None)
                     } else {
                         waker.register(cx.waker());
                         Poll::Pending
@@ -412,11 +431,24 @@ impl<'res> PendingTransmission<'res> {
 }
 impl Drop for PendingTransmission<'_> {
     fn drop(&mut self) {
-        self.tx_queue.inner.lock(|rc| {
-            rc.borrow_mut().queue_items[self.slot_index()]
-                .2
-                .store(false, Ordering::Relaxed)
-        })
+        let discarded = self.tx_queue.inner.lock(|rc| {
+            let mut state = rc.borrow_mut();
+            if state.is_counter_out_of_bounds(self.counter) {
+                // A delayed old handle must not cancel the new occupant.
+                return None;
+            }
+            let (slot, _, return_data_expected) = &mut state.queue_items[self.slot_index()];
+            return_data_expected.store(false, Ordering::Relaxed);
+            if matches!(slot.get_mut(), TxQueueSlot::ReturnDataAvailable(_)) {
+                // No caller remains to claim this completed buffer. Leaving it
+                // in the slot can exhaust the pool before another enqueue can
+                // overwrite it, permanently stalling allocation.
+                Some(slot.take())
+            } else {
+                None
+            }
+        });
+        drop(discarded);
     }
 }
 /// Provides access to all transmission queues.

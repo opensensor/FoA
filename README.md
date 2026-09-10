@@ -1,3 +1,26 @@
+# OpenSensor FoA
+
+This is OpenSensor Engineering's independently maintained fork of
+[esp32-open-mac/FoA](https://github.com/esp32-open-mac/FoA). The canonical repository
+is [opensensor/FoA](https://github.com/opensensor/FoA).
+
+**AI-assisted and AI-generated contributions are welcome.** See
+[Contributing](CONTRIBUTING.md) for review and validation expectations. Submit
+[issues](https://github.com/opensensor/FoA/issues) and [pull requests](https://github.com/opensensor/FoA/pulls) here.
+
+The [OpenSensor ESP repository index](https://github.com/opensensor/esp-wifi-hal/blob/main/FORKS.md)
+links the related driver, stack, register definitions and reverse-engineering tools.
+Original history, credits and licenses are retained.
+
+This fork initially preserves upstream code. The S3 results in the repository
+index apply to the Rust driver's recorded dependencies; they do not establish
+hardware validation of this repository's current default branch.
+
+## Upstream documentation
+
+The original documentation follows; its badges, release links and project status
+refer to upstream unless explicitly identified as OpenSensor results.
+
 # Ferris on Air
 
 Ferris on Air (FoA) is an open source 802.11 stack for the ESP32 written in

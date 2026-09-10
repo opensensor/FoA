@@ -243,6 +243,8 @@ impl<'res> TxQueueRunner<'res> {
                 }
 
                 let front_index = queue_state.front_index();
+                #[cfg(feature = "tx-trace")]
+                let generation = queue_state.counter - queue_state.len() as u64;
 
                 let (
                     ref mut front_slot_cell, 
@@ -265,6 +267,8 @@ impl<'res> TxQueueRunner<'res> {
                             (InProgressTransmission {
                                 tx_queue,
                                 index: front_index,
+                                #[cfg(feature = "tx-trace")]
+                                generation,
                             }, pending_frame)
                         )
                     }
@@ -295,10 +299,57 @@ pub struct InProgressTransmission<'res> {
     tx_queue: &'res TxQueue,
     /// The queue slot, to which this transmission corresponds.
     index: usize,
+    #[cfg(feature = "tx-trace")]
+    generation: u64,
 }
+
+/// Only public, unencrypted IEEE 802.11 header metadata is eligible for tracing.
+#[cfg(feature = "tx-trace")]
+#[derive(Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+struct TxTraceHeader {
+    kind: Option<u8>,
+    subtype: Option<u8>,
+    protected: Option<bool>,
+    sequence: Option<u16>,
+}
+
+#[cfg(feature = "tx-trace")]
+fn tx_trace_header(frame: &[u8]) -> TxTraceHeader {
+    let Some(control) = frame.get(..2) else {
+        return TxTraceHeader::default();
+    };
+    // Interpret only the known protocol version. Control/extension frames do
+    // not share the management/data sequence-control layout.
+    if control[0] & 3 != 0 {
+        return TxTraceHeader::default();
+    }
+    let kind = (control[0] >> 2) & 3;
+    let sequence = if matches!(kind, 0 | 2) {
+        frame.get(22..24).map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]) >> 4)
+    } else {
+        None
+    };
+    TxTraceHeader {
+        kind: Some(kind),
+        subtype: Some(control[0] >> 4),
+        protected: Some(control[1] & 0x40 != 0),
+        sequence,
+    }
+}
+
 impl InProgressTransmission<'_> {
     /// Execute an active transmission.
     pub async fn transmit(self, mut pending_frame: PendingFrame, tx_endpoint: &mut TxQueueEndpoint<'_>) {
+        #[cfg(feature = "tx-trace")]
+        trace!(
+            "FOA_TX start queue={} generation={} interface={} len={} header={:?}",
+            tx_endpoint.hardware_tx_queue().hardware_slot(),
+            self.generation,
+            pending_frame.interface,
+            pending_frame.frame_length,
+            tx_trace_header(&pending_frame.frame[..pending_frame.frame_length]),
+        );
         let result = tx_endpoint
             .transmit(
                 pending_frame.interface as usize,
@@ -308,6 +359,18 @@ impl InProgressTransmission<'_> {
                 &mut pending_frame.frame[..pending_frame.frame_length],
             )
             .await;
+        // The endpoint may assign the sequence number before transmitting, so
+        // read the safe header fields again after its actual completion.
+        #[cfg(feature = "tx-trace")]
+        trace!(
+            "FOA_TX finish queue={} generation={} interface={} len={} header={:?} result={:?}",
+            tx_endpoint.hardware_tx_queue().hardware_slot(),
+            self.generation,
+            pending_frame.interface,
+            pending_frame.frame_length,
+            tx_trace_header(&pending_frame.frame[..pending_frame.frame_length]),
+            result,
+        );
         self.finish(TxQueueSlot::ReturnDataAvailable(TxReturnData {
             result,
             frame: pending_frame.frame,

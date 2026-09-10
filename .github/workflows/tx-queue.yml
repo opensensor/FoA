@@ -4,12 +4,14 @@ on:
   push:
     paths:
       - foa/src/tx_queue.rs
+      - foa/Cargo.toml
       - foa/src/tx_buffer_management.rs
       - tests/**
       - .github/workflows/tx-queue.yml
   pull_request:
     paths:
       - foa/src/tx_queue.rs
+      - foa/Cargo.toml
       - foa/src/tx_buffer_management.rs
       - tests/**
       - .github/workflows/tx-queue.yml
@@ -31,3 +33,5 @@ jobs:
         run: tests/run-tx-queue.sh
       - name: Three-buffer pool with release arithmetic
         run: tests/run-tx-queue.sh --release --features small-pool
+      - name: Metadata-only TX completion telemetry
+        run: tests/run-tx-queue.sh --features tx-trace

@@ -68,3 +68,52 @@ against the unmodified `cf2415b` queue reproduces eleven failing tests. An
 ESP32-C3 `sta_smoke` release build also links with both `foa` and `foa_sta`
 resolved to this checkout; that compilation uses dummy credentials and does not
 flash hardware.
+
+## Optional radio-completion telemetry
+
+Enable the `foa/tx-trace` Cargo feature alongside the application's existing
+`foa/log` or `foa/defmt` logging backend. The feature is disabled by default, adds
+no dependency of its own, and does not change transmission or retry policy. With
+the `log` backend, enable only the `foa::tx_queue` target at trace level. For
+example, an application logger that supports `ESP_LOG` filters can use
+`ESP_LOG=info,foa::tx_queue=trace`; the feature itself does not read that variable
+or configure the logger. Enabling `foa_sta` debug logging is unnecessary.
+For the `esp-println` logger in the driver examples, set `ESP_LOG` when building:
+its filter is compiled into the firmware, and release optimization can remove
+these trace calls entirely when the compiled maximum log level is lower.
+
+Each software-queued EDCA transmission emits `FOA_TX start` before awaiting the
+radio and `FOA_TX finish` only after the endpoint returns. Both contain hardware
+queue number, queue generation, interface number, frame length, and a bounded
+header summary: numeric frame type/subtype, protected flag, and sequence number
+for protocol-version-zero management/data frames with a complete header. Other
+layouts omit sequence numbers. The queue/generation pair identifies a
+transmission; sequence numbers alone can wrap or initially be placeholders. The
+completion event rereads the header because the driver can assign the sequence
+number while preparing TX, including for encrypted data frames.
+
+The finish event's `result=Ok(n)` is the driver's actual completion result with
+`n` retries before success. `result=Err(...)` is its actual final error. The
+endpoint API does not provide the retry count on failure, so the trace does not
+invent one. A successful MAC completion does not prove the remote IP endpoint
+received the packet or sent a reply. A missing finish event may indicate a
+pending or cancelled radio operation, reset, or lost log output. Correlate these
+events with existing packet captures rather than inferring a MAC failure solely
+from a missing ping reply.
+
+The trace never formats a frame slice, addresses, IP fields, payload, credentials,
+or key material. It covers the software EDCA queue, including fire-and-forget
+callers; direct beacon transmissions do not pass through this queue. Logging
+adds work and can affect timing, so disable the feature after diagnosis.
+
+Run the additional metadata and completion tests with:
+
+```sh
+./tests/run-tx-queue.sh --features tx-trace
+```
+
+These run all fifteen ownership regressions plus two telemetry tests. They check
+short/unknown/control headers, immunity to address/payload changes, preserved
+protected payload bytes, sequence assignment, and paired start/finish events for
+actual success and failure completions. The logger is captured per test thread;
+no private frame data appears in its expected output.

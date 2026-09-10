@@ -34,6 +34,8 @@ esp-config = { workspace = true, features = ["build"] }
 [features]
 arc_buffers = []
 multi_rate_retry = []
+# Opt-in metadata-only completion tracing; select `log` or `defmt` separately.
+tx-trace = []
 
 log = ["dep:log", "defmt-or-log/log", "esp-wifi-hal/log"]
 defmt = [

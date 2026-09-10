@@ -444,4 +444,117 @@ mod tests {
         drop(handles);
         f.assert_pool_recovered();
     }
+
+    #[cfg(feature = "tx-trace")]
+    mod telemetry {
+        use super::*;
+        use std::cell::RefCell;
+        use std::sync::Once;
+
+        std::thread_local! {
+            static LINES: RefCell<Option<Vec<String>>> = const { RefCell::new(None) };
+        }
+        struct CaptureLogger;
+        impl log::Log for CaptureLogger {
+            fn enabled(&self, _: &log::Metadata<'_>) -> bool {
+                true
+            }
+            fn log(&self, record: &log::Record<'_>) {
+                LINES.with(|lines| {
+                    if let Some(lines) = lines.borrow_mut().as_mut() {
+                        lines.push(format!("{}", record.args()));
+                    }
+                });
+            }
+            fn flush(&self) {}
+        }
+        static LOGGER: CaptureLogger = CaptureLogger;
+        static INIT: Once = Once::new();
+
+        #[test]
+        fn trace_header_ignores_addresses_payload_and_unsupported_layouts() {
+            let mut frame = [0xddu8; TX_BUFFER_SIZE];
+            frame[..2].copy_from_slice(&[0x88, 0x40]); // Protected QoS data.
+            frame[22..24].copy_from_slice(&0xabcdu16.to_le_bytes());
+            let expected = TxTraceHeader {
+                kind: Some(2),
+                subtype: Some(8),
+                protected: Some(true),
+                sequence: Some(0xabc),
+            };
+            assert_eq!(tx_trace_header(&frame), expected);
+            frame[2..22].fill(0x99);
+            frame[24..].fill(0x33);
+            assert_eq!(tx_trace_header(&frame), expected);
+            for len in 0..24 {
+                let header = tx_trace_header(&frame[..len]);
+                assert_eq!(header.sequence, None);
+                if len < 2 {
+                    assert_eq!(header, TxTraceHeader::default());
+                }
+            }
+            frame[0] = 0xd4; // ACK control frame has no sequence-control field.
+            assert_eq!(tx_trace_header(&frame).sequence, None);
+            frame[0] = 0x0c; // Extension frame, do not assume the data layout.
+            assert_eq!(tx_trace_header(&frame).sequence, None);
+            frame[0] = 0x81; // Unknown protocol version.
+            assert_eq!(tx_trace_header(&frame), TxTraceHeader::default());
+            frame[0] = 0xb0; // Management authentication keeps the known layout.
+            assert_eq!(tx_trace_header(&frame).sequence, Some(0xabc));
+        }
+
+        #[test]
+        fn trace_pairs_actual_completions_without_frame_contents() {
+            INIT.call_once(|| {
+                log::set_logger(&LOGGER).unwrap();
+                log::set_max_level(log::LevelFilter::Trace);
+            });
+            let f = Fixture::new();
+            for (generation, result) in [Ok(3), Err(TxError::AckTimeout)].into_iter().enumerate() {
+                LINES.with(|lines| lines.replace(Some(Vec::new())));
+                let mut frame = f.pool.try_alloc().unwrap();
+                frame.fill(0x91);
+                frame[..2].copy_from_slice(&[0x88, 0x40]);
+                frame[22..24].copy_from_slice(&(120u16 << 4).to_le_bytes());
+                let private_payload = b"DO_NOT_LOG_THIS_PRIVATE_PAYLOAD";
+                frame[24..24 + private_payload.len()].copy_from_slice(private_payload);
+                f.radio.sequence_override.set(Some(999));
+                let handle = f.endpoint.transmit_edca(
+                    EdcaAccessCategory::default(),
+                    frame,
+                    TX_BUFFER_SIZE,
+                    Default::default(),
+                    Default::default(),
+                    RetryBehaviour::RetryUntil(7),
+                );
+                let (active, pending) = TxQueueRunner::try_receive(f.queue).unwrap();
+                let mut endpoint = TxQueueEndpoint::new(f.radio);
+                let mut transmitting = Box::pin(active.transmit(pending, &mut endpoint));
+                assert!(poll_once(transmitting.as_mut()).is_pending());
+                LINES.with(|lines| assert_eq!(lines.borrow().as_ref().unwrap().len(), 1));
+                f.radio.complete(result);
+                assert!(poll_once(transmitting.as_mut()).is_ready());
+                let returned = ready(handle.wait_for_completion()).unwrap();
+                assert_eq!(returned.result, result);
+                assert_eq!(
+                    &returned.frame[24..24 + private_payload.len()],
+                    private_payload
+                );
+                drop(returned);
+                let lines = LINES.with(|lines| lines.take().unwrap());
+                assert_eq!(
+                    lines,
+                    vec![
+                        format!(
+                            "FOA_TX start queue=1 generation={generation} interface=0 len={TX_BUFFER_SIZE} header=TxTraceHeader {{ kind: Some(2), subtype: Some(8), protected: Some(true), sequence: Some(120) }}"
+                        ),
+                        format!(
+                            "FOA_TX finish queue=1 generation={generation} interface=0 len={TX_BUFFER_SIZE} header=TxTraceHeader {{ kind: Some(2), subtype: Some(8), protected: Some(true), sequence: Some(999) }} result={result:?}"
+                        ),
+                    ]
+                );
+            }
+            f.assert_pool_recovered();
+        }
+    }
 }

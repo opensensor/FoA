@@ -117,3 +117,6 @@ short/unknown/control headers, immunity to address/payload changes, preserved
 protected payload bytes, sequence assignment, and paired start/finish events for
 actual success and failure completions. The logger is captured per test thread;
 no private frame data appears in its expected output.
+
+For the station's generated-frame sequence assignment and its separate device
+regression procedure, see [STA-SEQUENCES.md](STA-SEQUENCES.md).

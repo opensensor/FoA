@@ -130,7 +130,11 @@ mod private {
                         rate: sta_tx_rx.phy_rate(),
                         ..Default::default()
                     },
-                    TxMacParameters::default(),
+                    TxMacParameters {
+                        // The EAPOL data header starts with a placeholder.
+                        override_seq_num: true,
+                        ..Default::default()
+                    },
                     RetryBehaviour::RetryUntil(7),
                 )
                 .wait_for_completion()
@@ -412,7 +416,12 @@ impl<'foa, 'vif, 'params> ConnectionOperation<'foa, 'vif, 'params> {
                         rate: self.sta_tx_rx.phy_rate(),
                         ..Default::default()
                     },
-                    TxMacParameters::default(),
+                    TxMacParameters {
+                        // Authentication and association frames are generated
+                        // here; assign a new sequence for each queued request.
+                        override_seq_num: true,
+                        ..Default::default()
+                    },
                     foa::RetryBehaviour::RetryUntil(7),
                 )
                 .wait_for_completion()

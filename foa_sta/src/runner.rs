@@ -226,6 +226,9 @@ impl ConnectionRunner<'_, '_> {
                 TxMacParameters {
                     key_slot_index: key_slot,
                     wait_for_ack: true,
+                    // Each newly generated MSDU needs a fresh MPDU sequence;
+                    // the driver keeps it unchanged across its MAC retries.
+                    override_seq_num: true,
                     ..Default::default()
                 },
                 RetryBehaviour::RetryUntil(7),

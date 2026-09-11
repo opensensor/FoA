@@ -22,6 +22,8 @@ the handshake debug messages or change routing, disconnect or retry policy.
   value is the configured flag, not proof that a reconnect was attempted.
 
 Address matches are observations, not authentication or newly enforced filters.
+Reason codes are untrusted parser output; a Protected bit alone does not establish
+that a management frame was decrypted or authenticated.
 Disassociation is traced at ingress but its existing handling is unchanged.
 Frames rejected before the RX router are outside these ingress events.
 Successful MAC TX completion and queue insertion do not establish delivery to

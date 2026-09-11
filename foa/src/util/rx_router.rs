@@ -300,6 +300,14 @@ pub struct RxRouterScopedOperation<'foa, 'router, 'endpoint, Operation: RxRouter
     endpoint: &'endpoint RxRouterEndpoint<'foa, 'router, Operation>,
 }
 impl<Operation: RxRouterOperation> RxRouterScopedOperation<'_, '_, '_, Operation> {
+    /// Get the current operation, including any transition made by this guard.
+    pub fn operation(&self) -> Operation {
+        self.endpoint
+            .rx_router
+            .operation_state(self.endpoint.router_queue)
+            .get()
+            .expect("A live scoped operation always has an active operation.")
+    }
     /// Mark the operation as completed.
     pub fn complete(self) {}
     /// Transition to another operation type.

@@ -16,6 +16,7 @@ pub struct ReceivedFrame<'a> {
 }
 impl ReceivedFrame<'_> {
     pub fn mpdu_buffer(&self) -> &[u8] { self.bytes }
+    pub fn timestamp(&self) -> u32 { 0 }
 }
 impl Drop for ReceivedFrame<'_> {
     fn drop(&mut self) { self.drops.set(self.drops.get() + 1); }
@@ -35,8 +36,11 @@ include!(concat!(env!("OUT_DIR"), "/production.rs"));
 mod tests {
     use super::*;
     use connection_state::{ConnectionConfig, ConnectionInfo, ConnectionState, ConnectionStateTracker};
-    use ieee80211::{common::AssociationID, mac_parser::MACAddress};
-    use rx_router::{StaRxRouter, StaRxRouterOperation};
+    use ieee80211::{
+        common::{AssociationID, IEEE80211StatusCode}, mac_parser::MACAddress,
+        mgmt_frame::{AuthenticationFrame, AssociationResponseFrame}, scroll::Pread,
+    };
+    use rx_router::{StaRxRouter, StaRxRouterOperation, receive_connection_response};
     use std::{future::Future, pin::pin, task::{Context, Poll, Waker}};
     use util::rx_router::RxRouterRoutingError;
 
@@ -70,6 +74,22 @@ mod tests {
         bytes[16..22].copy_from_slice(&AP);
         bytes[22..24].copy_from_slice(&(sequence << 4).to_le_bytes());
         bytes[24] = 3; // leaving network
+        bytes
+    }
+    fn response(subtype: u8, sequence: u16, status: u16) -> [u8; 30] {
+        let mut bytes = [0; 30];
+        bytes[..24].copy_from_slice(&deauth(sequence)[..24]);
+        bytes[0] = subtype;
+        if subtype == 0xb0 {
+            bytes[26] = 2; // open authentication response
+            bytes[28..30].copy_from_slice(&status.to_le_bytes());
+        } else {
+            bytes[24] = 1; // ESS capabilities
+            bytes[26..28].copy_from_slice(&status.to_le_bytes());
+            if status == 0 {
+                bytes[28..30].copy_from_slice(&0xc001u16.to_le_bytes());
+            }
+        }
         bytes
     }
     fn disconnected(event: Option<ConnectionRxEvent>) -> DisconnectionReason {
@@ -147,4 +167,93 @@ mod tests {
         for _ in 0..RX_QUEUE_DEPTH { drop(ready(background.receive())); }
         assert_eq!(drops.get(), RX_QUEUE_DEPTH + 1);
     }
+    #[test]
+    fn queued_auth_duplicate_is_reinterpreted_as_association_status_two_without_revalidation() {
+        let drops = Cell::new(0);
+        let auth = response(0xb0, 201, 0);
+        let assoc = response(0x10, 202, 0);
+        let mut router = StaRxRouter::new();
+        let (input, [mut foreground, _background]) = router.split();
+        let mut operation = ready(foreground.start_operation(StaRxRouterOperation::Authenticating {
+            own_address: MACAddress::new(OWN),
+        }));
+        for _ in 0..2 { input.route_frame(ReceivedFrame { bytes: &auth, drops: &drops }).unwrap(); }
+        let first = ready(operation.receive());
+        assert_eq!(first.mpdu_buffer().pread::<AuthenticationFrame>(0).unwrap().status_code, IEEE80211StatusCode::Success);
+        drop(first);
+        operation.transition(StaRxRouterOperation::Associating { own_address: MACAddress::new(OWN) }).unwrap();
+        input.route_frame(ReceivedFrame { bytes: &assoc, drops: &drops }).unwrap();
+        // Production legacy receive and the real parser reproduce the exact
+        // observed status without any association rejection on the wire.
+        let duplicate = ready(operation.receive());
+        let misparsed = duplicate.mpdu_buffer().pread::<AssociationResponseFrame>(0).unwrap();
+        assert_eq!(misparsed.status_code, IEEE80211StatusCode::TdlsRejectedAlternativeProvided);
+        assert_eq!(misparsed.association_id, None);
+        drop(duplicate);
+        let genuine = ready(operation.receive());
+        assert_eq!(genuine.mpdu_buffer().pread::<AssociationResponseFrame>(0).unwrap().status_code, IEEE80211StatusCode::Success);
+    }
+
+    #[test]
+    fn current_operation_revalidation_releases_duplicate_and_accepts_association_behind_it() {
+        let drops = Cell::new(0);
+        let auth = response(0xb0, 203, 0);
+        let assoc = response(0x10, 204, 0);
+        let mut router = StaRxRouter::new();
+        let (input, [mut foreground, _background]) = router.split();
+        let mut operation = ready(foreground.start_operation(StaRxRouterOperation::Authenticating {
+            own_address: MACAddress::new(OWN),
+        }));
+        for _ in 0..2 { input.route_frame(ReceivedFrame { bytes: &auth, drops: &drops }).unwrap(); }
+        drop(ready(receive_connection_response(&operation)));
+        operation.transition(StaRxRouterOperation::Associating { own_address: MACAddress::new(OWN) }).unwrap();
+        input.route_frame(ReceivedFrame { bytes: &assoc, drops: &drops }).unwrap();
+        let genuine = ready(receive_connection_response(&operation));
+        assert_eq!(drops.get(), 2, "first response and stale duplicate released");
+        let parsed = genuine.mpdu_buffer().pread::<AssociationResponseFrame>(0).unwrap();
+        assert_eq!(parsed.status_code, IEEE80211StatusCode::Success);
+        assert_eq!(parsed.association_id, AssociationID::new_checked(1));
+        drop(genuine);
+        assert_eq!(drops.get(), 3);
+    }
+
+    #[test]
+    fn current_authentication_and_association_rejection_responses_are_preserved() {
+        for (subtype, operation) in [
+            (0xb0, StaRxRouterOperation::Authenticating { own_address: MACAddress::new(OWN) }),
+            (0x10, StaRxRouterOperation::Associating { own_address: MACAddress::new(OWN) }),
+        ] {
+            let drops = Cell::new(0);
+            let rejection = response(subtype, 205, 2);
+            let mut router = StaRxRouter::new();
+            let (input, [mut foreground, _background]) = router.split();
+            let operation = ready(foreground.start_operation(operation));
+            input.route_frame(ReceivedFrame { bytes: &rejection, drops: &drops }).unwrap();
+            let received = ready(receive_connection_response(&operation));
+            assert_eq!(drops.get(), 0, "a matching response is not discarded based on status");
+            let status = if subtype == 0xb0 {
+                received.mpdu_buffer().pread::<AuthenticationFrame>(0).unwrap().status_code
+            } else {
+                received.mpdu_buffer().pread::<AssociationResponseFrame>(0).unwrap().status_code
+            };
+            assert_eq!(status, IEEE80211StatusCode::TdlsRejectedAlternativeProvided);
+        }
+    }
+
+    #[test]
+    fn authentication_arriving_after_transition_still_routes_to_background() {
+        let drops = Cell::new(0);
+        let auth = response(0xb0, 206, 0);
+        let mut router = StaRxRouter::new();
+        let (input, [mut foreground, background]) = router.split();
+        let operation = ready(foreground.start_operation(StaRxRouterOperation::Associating {
+            own_address: MACAddress::new(OWN),
+        }));
+        input.route_frame(ReceivedFrame { bytes: &auth, drops: &drops }).unwrap();
+        pending(receive_connection_response(&operation));
+        assert_eq!(drops.get(), 0);
+        drop(ready(background.receive()));
+        assert_eq!(drops.get(), 1);
+    }
+
 }

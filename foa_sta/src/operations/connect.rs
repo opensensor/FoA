@@ -29,7 +29,10 @@ use crate::{
     ConnectionConfig, SecurityConfig, StaError, StaTxRx,
     bss::BSS,
     operations::{DEFAULT_SUPPORTED_RATES, DEFAULT_XRATES},
-    rx_router::{StaRxRouterEndpoint, StaRxRouterOperation, StaRxRouterScopedOperation},
+    rx_router::{
+        StaRxRouterEndpoint, StaRxRouterOperation, StaRxRouterScopedOperation,
+        receive_connection_response,
+    },
     util::HexWrapper,
 };
 
@@ -431,10 +434,10 @@ impl<'foa, 'vif, 'params> ConnectionOperation<'foa, 'vif, 'params> {
                 break;
             };
             frame = res.frame;
-            // Due to the user operation being set to authenticating, we'll only receive authentication
-            // frames.
-            if let Ok(frame) = router_operation
-                .receive()
+            // Revalidate against the current operation: a response queued before
+            // an auth/assoc transition may have the previous step's subtype.
+            // One timeout covers all discarded frames, preserving the deadline.
+            if let Ok(frame) = receive_connection_response(router_operation)
                 .with_timeout(self.connection_parameters.config.handshake_timeout)
                 .await
             {

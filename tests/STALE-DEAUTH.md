@@ -22,3 +22,28 @@ device disconnect or association failure. A deauth received **after** a new
 authentication begins may be a genuine rejection and must not be erased when
 the station enters Connected. The diagnostic ingress/dequeue timestamps provide
 separate evidence for actual hardware runs.
+
+## Authentication responses retained across an association transition
+
+The foreground queue also retains frames when its scoped operation transitions.
+The production `ieee80211` 0.5.9 typed management parser checks management frame
+class but does not reject an unexpected management subtype. The regression queues
+two valid successful authentication responses, consumes the first, transitions to
+association, then queues a genuine successful association response. Raw receive
+returns the remaining authentication response first. Parsing its body as an
+association response produces status `TdlsRejectedAlternativeProvided` (2) and no
+AID: authentication's transaction number 2 occupies association's status field.
+This reproduces the observed error text without an on-air association rejection;
+it establishes a possible mechanism, not the cause of any specific device run.
+
+Authentication and association now use `receive_connection_response`, which checks
+the actual scoped operation's production classifier again at dequeue. A stale
+response is dropped, releasing its buffer, and the next matching response remains
+available. The existing handshake timeout wraps the entire helper, so discarded
+responses do not reset its deadline. Matching rejection statuses remain intact;
+authentication arriving after the transition still follows normal background
+routing. This change neither flushes queues nor changes source-address policy.
+
+With `connection-trace`, discarded frames produce `stage=sta_stale_frame` with
+local time, raw RX timestamp, current operation name, and frame type/subtype.
+The event contains no addresses, frame body, credentials, or keys.

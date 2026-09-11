@@ -50,7 +50,37 @@ impl ConnectionRunner<'_, '_> {
     /// Handle a deauth frame.
     ///
     /// NOTE: Currently this immediately leads to disconnection.
-    fn handle_deauth(&self, deauth: DeauthenticationFrame<'_>) -> ConnectionRxEvent {
+    fn handle_deauth(
+        &self,
+        deauth: DeauthenticationFrame<'_>,
+        _rx_timestamp: u32,
+    ) -> ConnectionRxEvent {
+        #[cfg(feature = "connection-trace")]
+        {
+            let matches = self.sta_tx_rx.connection_state.map_connection_info(|info| {
+                (
+                    deauth.header.transmitter_address == info.bss.bssid,
+                    deauth.header.bssid == info.bss.bssid,
+                    deauth.header.receiver_address == info.own_address,
+                )
+            });
+            let (transmitter_matches, bssid_matches, receiver_matches) =
+                matches.unwrap_or((false, false, false));
+            log::info!(
+                "stage=sta_deauth us={} rx_timestamp={} reason={} connected={} transmitter_matches={} bssid_matches={} receiver_matches={} group={} sequence={} retry={} protected={}",
+                embassy_time::Instant::now().as_micros(),
+                _rx_timestamp,
+                deauth.reason.into_bits(),
+                matches.is_some(),
+                transmitter_matches,
+                bssid_matches,
+                receiver_matches,
+                deauth.header.receiver_address.is_multicast(),
+                deauth.header.sequence_control.sequence_number(),
+                deauth.header.fcf_flags.retry(),
+                deauth.header.fcf_flags.protected(),
+            );
+        }
         debug!(
             "Received deauthentication frame from {}, reason: {:?}.",
             deauth.header.transmitter_address, deauth.reason
@@ -62,7 +92,7 @@ impl ConnectionRunner<'_, '_> {
         match_frames! {
             buffer.mpdu_buffer(),
             deauth = DeauthenticationFrame => {
-                self.handle_deauth(deauth)
+                self.handle_deauth(deauth, buffer.timestamp())
             }
             _beacon = BeaconFrame => {
                 ConnectionRxEvent::BeaconReceived
@@ -248,6 +278,17 @@ impl ConnectionRunner<'_, '_> {
             self.state_runner
                 .set_hardware_address(HardwareAddress::Ethernet(*connection_info.own_address));
             self.state_runner.set_link_state(LinkState::Up);
+            #[cfg(feature = "connection-trace")]
+            log::info!(
+                "stage=sta_link us={} up=true beacon_timeout_ms={} automatic_reconnect={}",
+                embassy_time::Instant::now().as_micros(),
+                connection_info
+                    .connection_config
+                    .beacon_timeout
+                    .map(|d| d.as_millis())
+                    .unwrap_or(0),
+                connection_info.connection_config.automatic_reconnect,
+            );
             debug!("Link went up.");
             // At this point, the channel will have been locked, so we'll only receive off channel
             // requests, while we're connected.
@@ -265,6 +306,17 @@ impl ConnectionRunner<'_, '_> {
                 }
                 Either3::Third(_) => unreachable!(),
             };
+            #[cfg(feature = "connection-trace")]
+            log::info!(
+                "stage=sta_link us={} up=false reason={} off_channel={}",
+                embassy_time::Instant::now().as_micros(),
+                match disconnection_reason {
+                    DisconnectionReason::User => "user",
+                    DisconnectionReason::BeaconTimeout => "beacon_timeout",
+                    DisconnectionReason::Deauthenticated => "deauthenticated",
+                },
+                self.sta_tx_rx.in_off_channel_operation(),
+            );
             if tx_runner.try_tx_buf().is_some() {
                 tx_runner.tx_done();
             }
@@ -451,7 +503,44 @@ impl RoutingRunner<'_, '_> {
                 }
             }
             // We ask the RX router, where all other frames should go.
-            let _ = self.rx_router_input.route_frame(borrowed_buffer);
+            #[cfg(feature = "connection-trace")]
+            let management_trace = match_frames! {
+                borrowed_buffer.mpdu_buffer(),
+                frame = DeauthenticationFrame => { (12u8, frame.header, frame.reason.into_bits()) }
+                frame = ieee80211::mgmt_frame::DisassociationFrame => { (10u8, frame.header, frame.reason.into_bits()) }
+            }.ok().map(|(subtype, header, reason)| {
+                let matches = self.sta_tx_rx.connection_state.map_connection_info(|info| (
+                    header.transmitter_address == info.bss.bssid,
+                    header.bssid == info.bss.bssid,
+                    header.receiver_address == info.own_address,
+                ));
+                let (ta, bssid, ra) = matches.unwrap_or((false, false, false));
+                log::info!(
+                    "stage=sta_mgmt_rx us={} rx_timestamp={} subtype={} reason={} connected={} transmitter_matches={} bssid_matches={} receiver_matches={} group={} sequence={} fragment={} retry={} protected={} foreground_operation={}",
+                    embassy_time::Instant::now().as_micros(), borrowed_buffer.timestamp(),
+                    subtype, reason, matches.is_some(), ta, bssid, ra,
+                    header.receiver_address.is_multicast(),
+                    header.sequence_control.sequence_number(), header.sequence_control.fragment_number(),
+                    header.fcf_flags.retry(), header.fcf_flags.protected(),
+                    match self.rx_router_input.operation(RxRouterQueue::Foreground) {
+                        None => "none",
+                        Some(StaRxRouterOperation::Scanning) => "scan",
+                        Some(StaRxRouterOperation::Authenticating { .. }) => "auth",
+                        Some(StaRxRouterOperation::Associating { .. }) => "assoc",
+                        Some(StaRxRouterOperation::CryptoHandshake { .. }) => "handshake",
+                    },
+                );
+                borrowed_buffer.timestamp()
+            });
+            let _route_result = self.rx_router_input.route_frame(borrowed_buffer);
+            #[cfg(feature = "connection-trace")]
+            if let Some(rx_timestamp) = management_trace {
+                log::info!(
+                    "stage=sta_mgmt_route rx_timestamp={} queued={}",
+                    rx_timestamp,
+                    _route_result.is_ok()
+                );
+            }
         }
     }
 }

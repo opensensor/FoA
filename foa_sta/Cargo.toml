@@ -46,4 +46,6 @@ esp32 = ["foa/esp32", "esp-hal/esp32"]
 esp32s2 = ["foa/esp32s2", "esp-hal/esp32s2"]
 
 log = ["dep:log", "foa/log", "defmt-or-log/log"]
+# Connection metadata only; keeps handshake/key debug logs disabled.
+connection-trace = ["log"]
 defmt = ["dep:defmt", "defmt-or-log/defmt", "foa/defmt", "ieee80211/defmt"]

@@ -55,3 +55,24 @@ original 10 ms deadline. They invoke the production helper with the same outer
 compatibility test also preserves an EAPOL data frame behind a stale association
 response. The actual EAPOL handshake keeps its existing parse/discard loop.
 CI runs the queue/parser suite in debug and release profiles.
+
+## Device observation
+
+The corrected S3 image recorded a queued Authentication frame discarded during
+cycle 4 association, then completed all ten reconnect cycles. It returned 200/200
+host replies and 196/200 gateway replies; the final gateway assertion failed.
+The preceding diagnostic-only and measured-clock runs stopped at association
+status 2 in cycles 5 and 4, respectively. The unchanged reviewed C control returned
+200/200 in each direction across ten cycles. These observations establish the
+stale-frame path on the device and its recovery, while leaving packet loss as a
+separate unresolved problem. They do not reconstruct the missing frame from the
+earlier failed runs.
+
+The corrected C3 run completed nine traffic cycles with 180/180 replies in each
+direction, then timed out during the tenth connection's WPA2 handshake. It
+recorded no stale-response events. The timeout and a reason 15 management ingress
+are retained in the report; this response-subtype correction does not establish
+general reconnect reliability or alter EAPOL processing.
+
+Exact hashes, comparison settings and retained failures are in the
+[HAL device report](https://github.com/opensensor/esp-wifi-hal/blob/main/docs/network/CONNECTION-RESPONSE-VALIDATION.md).

@@ -120,3 +120,8 @@ no private frame data appears in its expected output.
 
 For the station's generated-frame sequence assignment and its separate device
 regression procedure, see [STA-SEQUENCES.md](STA-SEQUENCES.md).
+
+[C3 and S3 integration results](https://github.com/opensensor/esp-wifi-hal/blob/main/docs/network/TX-QUEUE.md)
+record the queue correction with the actual driver and network stack, including
+failed first runs and identical-image repeats. [Receive replay protection](STA-REPLAY.md)
+addresses a separate duplicate-delivery path.

@@ -46,14 +46,14 @@ then retransmitted, it can resemble an older duplicate. This is a plausible loss
 mechanism, not proof that it caused the observed missing gateway reply. The
 constant generated sequence is a concrete correctness bug regardless.
 
-The HAL software retry loop currently clears the Retry bit in byte 1 after the
-loop but does not explicitly set it before subsequent attempts. The reviewed TX
-setup does not pass a retry-attempt index into its register configuration. That
-source inspection does not establish whether undocumented MAC hardware changes
-the on-air bit. The completion trace reads after the software clear and therefore
-cannot answer that question. A monitor-mode capture of actual retried MPDUs is
-needed before attributing loss to, or changing, Retry-bit behavior. This patch
-does not modify it.
+At the sequence-fix baseline, the HAL retry loop cleared Retry after the loop
+but omitted its update before subsequent attempts. Later history review found
+that an async rewrite had removed the old software update. OpenSensor's HAL
+now [restores Retry after MAC failures](https://github.com/opensensor/esp-wifi-hal/blob/main/docs/network/MAC-RETRIES.md),
+with production-loop regressions and C3/S3 device evidence. That separate fix
+does not alter this sequence assignment. The completion trace still reads after
+the final clear, so it cannot establish actual on-air Retry values or attribute
+all remaining loss to retransmissions.
 
 ## Device regression procedure
 
@@ -83,4 +83,5 @@ validation for this change.
 
 Both ESP32-C3 and ESP32-S3 `sta_smoke` release builds link with this checkout and
 completion tracing enabled. That build check uses dummy credentials and does not
-flash a device; the hardware regression remains a separate validation step.
+flash a device. Subsequent [C3 and S3 hardware traces](https://github.com/opensensor/esp-wifi-hal/blob/main/docs/network/STA-SEQUENCES.md)
+verify generated sequence assignment and preserve remaining losses separately.

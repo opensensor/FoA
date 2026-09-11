@@ -69,7 +69,7 @@ impl<const N: usize, const IS_PAIRWISE: bool> TransientKeySecurityAssociation<N,
     /// This will only update the replay counter, if the PN is larger than the current value.
     pub fn update_and_validate_replay_counter(&self, packet_number: u64) -> bool {
         let replay_counter = self.replay_counter.load(Ordering::Relaxed);
-        let valid = replay_counter <= packet_number;
+        let valid = replay_counter < packet_number;
         if valid {
             self.replay_counter.store(packet_number, Ordering::Relaxed);
         } else {

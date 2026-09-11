@@ -1,0 +1,35 @@
+name: Station replay protection
+
+on:
+  push:
+    paths:
+      - foa_sta/src/rsn.rs
+      - foa_sta/src/runner.rs
+      - tests/sta-replay/**
+      - tests/run-sta-replay.sh
+      - .github/workflows/sta-replay.yml
+  pull_request:
+    paths:
+      - foa_sta/src/rsn.rs
+      - foa_sta/src/runner.rs
+      - tests/sta-replay/**
+      - tests/run-sta-replay.sh
+      - .github/workflows/sta-replay.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  host-regressions:
+    runs-on: ubuntu-latest
+    env:
+      RUSTUP_TOOLCHAIN: 1.90.0
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tested host toolchain
+        run: rustup toolchain install 1.90.0 --profile minimal
+      - name: Debug replay and routing tests
+        run: tests/run-sta-replay.sh
+      - name: Release replay and routing tests
+        run: tests/run-sta-replay.sh --release

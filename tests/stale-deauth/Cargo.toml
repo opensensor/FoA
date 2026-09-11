@@ -1,0 +1,17 @@
+[package]
+name = "foa-stale-deauth-host-tests"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+embassy-sync = { version = "=0.8.0", features = ["std"] }
+embassy-time = "=0.5.1"
+ieee80211 = { version = "=0.5.9", features = ["crypto"] }
+log = "=0.4.33"
+
+[build-dependencies]
+syn = { version = "2.0", features = ["full"] }
+quote = "1.0"

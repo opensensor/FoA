@@ -7,8 +7,9 @@ publish = false
 [workspace]
 
 [dependencies]
+critical-section = { version = "=1.2.0", features = ["std"] }
 embassy-sync = { version = "=0.8.0", features = ["std"] }
-embassy-time = "=0.5.1"
+embassy-time = { version = "=0.5.1", features = ["mock-driver", "generic-queue-8"] }
 ieee80211 = { version = "=0.5.9", features = ["crypto"] }
 log = "=0.4.33"
 

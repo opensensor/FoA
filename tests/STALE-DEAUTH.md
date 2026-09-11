@@ -47,3 +47,11 @@ routing. This change neither flushes queues nor changes source-address policy.
 With `connection-trace`, discarded frames produce `stage=sta_stale_frame` with
 local time, raw RX timestamp, current operation name, and frame type/subtype.
 The event contains no addresses, frame body, credentials, or keys.
+
+The follow-up host checks use Embassy's mock time driver to delay polling a full
+stale backlog until 9 ms into a 10 ms receive timeout, then verify expiry at the
+original 10 ms deadline. They invoke the production helper with the same outer
+`WithTimeout` wrapper; they do not simulate radio TX completion. A classifier
+compatibility test also preserves an EAPOL data frame behind a stale association
+response. The actual EAPOL handshake keeps its existing parse/discard loop.
+CI runs the queue/parser suite in debug and release profiles.

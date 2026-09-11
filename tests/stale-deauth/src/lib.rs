@@ -256,4 +256,61 @@ mod tests {
         assert_eq!(drops.get(), 1);
     }
 
+    #[test]
+    fn filtering_near_deadline_does_not_restart_the_original_timeout() {
+        use embassy_time::{Duration, MockDriver, WithTimeout};
+        // This is the only test that advances the process-global mock clock.
+        let clock = MockDriver::get();
+        clock.reset();
+        let drops = Cell::new(0);
+        let auth = response(0xb0, 207, 0);
+        let mut router = StaRxRouter::new();
+        let (input, [mut foreground, _background]) = router.split();
+        let mut operation = ready(foreground.start_operation(StaRxRouterOperation::Authenticating {
+            own_address: MACAddress::new(OWN),
+        }));
+        for _ in 0..RX_QUEUE_DEPTH {
+            input.route_frame(ReceivedFrame { bytes: &auth, drops: &drops }).unwrap();
+        }
+        operation.transition(StaRxRouterOperation::Associating { own_address: MACAddress::new(OWN) }).unwrap();
+        // Match the production call site: one deadline around the entire helper.
+        let mut response = pin!(receive_connection_response(&operation).with_timeout(Duration::from_millis(10)));
+        // Delay polling until just before that deadline, then discard a whole
+        // backlog. Starting a new timeout for each receive would extend to 19ms.
+        clock.advance(Duration::from_millis(9));
+        assert!(response.as_mut().poll(&mut Context::from_waker(Waker::noop())).is_pending());
+        assert_eq!(drops.get(), RX_QUEUE_DEPTH);
+        clock.advance(Duration::from_millis(1));
+        assert!(matches!(response.as_mut().poll(&mut Context::from_waker(Waker::noop())), Poll::Ready(Err(_))));
+    }
+
+    #[test]
+    fn crypto_operation_filter_preserves_eapol_behind_stale_association() {
+        let drops = Cell::new(0);
+        let assoc = response(0x10, 208, 0);
+        let mut eapol = [0u8; 131];
+        eapol[..24].copy_from_slice(&deauth(209)[..24]);
+        eapol[0] = 0x08; // data, from DS
+        eapol[1] = 0x02;
+        eapol[24..32].copy_from_slice(&[0xaa, 0xaa, 0x03, 0, 0, 0, 0x88, 0x8e]);
+        eapol[32..36].copy_from_slice(&[2, 3, 0, 95]); // 802.1X EAPOL-Key header
+        eapol[36] = 2; // RSN key descriptor
+        eapol[37..39].copy_from_slice(&0x008au16.to_be_bytes()); // pairwise, ACK, MIC version2
+        eapol[39..41].copy_from_slice(&16u16.to_be_bytes());
+        let mut router = StaRxRouter::new();
+        let (input, [mut foreground, _background]) = router.split();
+        let mut operation = ready(foreground.start_operation(StaRxRouterOperation::Associating {
+            own_address: MACAddress::new(OWN),
+        }));
+        input.route_frame(ReceivedFrame { bytes: &assoc, drops: &drops }).unwrap();
+        operation.transition(StaRxRouterOperation::CryptoHandshake { own_address: MACAddress::new(OWN) }).unwrap();
+        input.route_frame(ReceivedFrame { bytes: &eapol, drops: &drops }).unwrap();
+        let received = ready(receive_connection_response(&operation));
+        assert_eq!(drops.get(), 1);
+        assert_eq!(received.mpdu_buffer(), &eapol);
+        assert!(ieee80211::GenericFrame::new(received.mpdu_buffer(), false).unwrap().is_eapol_key_frame());
+        // Current production EAPOL processing uses its own parse/discard loop;
+        // this checks classifier compatibility without changing that path.
+    }
+
 }

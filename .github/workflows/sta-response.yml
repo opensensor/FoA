@@ -1,0 +1,41 @@
+name: Station response queue validation
+
+on:
+  push:
+    paths:
+      - foa/src/util/rx_router.rs
+      - foa_sta/src/rx_router.rs
+      - foa_sta/src/runner.rs
+      - foa_sta/src/connection_state.rs
+      - foa_sta/src/operations/connect.rs
+      - tests/stale-deauth/**
+      - tests/run-stale-deauth.sh
+      - .github/workflows/sta-response.yml
+  pull_request:
+    paths:
+      - foa/src/util/rx_router.rs
+      - foa_sta/src/rx_router.rs
+      - foa_sta/src/runner.rs
+      - foa_sta/src/connection_state.rs
+      - foa_sta/src/operations/connect.rs
+      - tests/stale-deauth/**
+      - tests/run-stale-deauth.sh
+      - .github/workflows/sta-response.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  host-regressions:
+    runs-on: ubuntu-latest
+    env:
+      RUSTUP_TOOLCHAIN: 1.90.0
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tested host toolchain
+        run: rustup toolchain install 1.90.0 --profile minimal
+      - name: Debug response and reconnect tests
+        run: sh tests/run-stale-deauth.sh
+      - name: Release response and reconnect tests
+        run: sh tests/run-stale-deauth.sh --release

@@ -73,6 +73,9 @@ direction, then timed out during the tenth connection's WPA2 handshake. It
 recorded no stale-response events. The timeout and a reason 15 management ingress
 are retained in the report; this response-subtype correction does not establish
 general reconnect reliability or alter EAPOL processing.
+The earlier C3 diagnostic image subsequently completed ten cycles with 200/200
+replies in each direction. This control is retained alongside the corrected
+image's failed run and does not isolate the timeout's cause.
 
 Exact hashes, comparison settings and retained failures are in the
 [HAL device report](https://github.com/opensensor/esp-wifi-hal/blob/main/docs/network/CONNECTION-RESPONSE-VALIDATION.md).

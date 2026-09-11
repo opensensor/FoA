@@ -99,6 +99,30 @@ fn main() {
         selected[0].to_tokens(&mut methods);
     }
     output.extend(quote! { impl RoutingRunner { #methods } });
+    let initial_path = root.join("foa_sta/src/rsn_initial.rs").canonicalize().unwrap();
+    let connect_path = root.join("foa_sta/src/operations/connect.rs");
+    for path in [&initial_path, &connect_path] { println!("cargo:rerun-if-changed={}", path.display()); }
+    let initial_path = initial_path.to_str().unwrap();
+    output.extend(quote! { #[path = #initial_path] mod rsn_initial; });
+    let connect = syn::parse_file(&fs::read_to_string(connect_path).unwrap()).unwrap();
+    let private = connect.items.iter().find_map(|item| match item {
+        Item::Mod(item) if item.ident == "private" => item.content.as_ref().map(|(_,items)|items),
+        _ => None,
+    }).unwrap();
+    let mut initial_methods = quote! {};
+    for name in ["process_message_1", "process_message_3"] {
+        let methods: Vec<_> = private.iter().filter_map(|item| match item {
+            Item::Impl(item) => Some(item), _ => None,
+        }).flat_map(|item| &item.items).filter_map(|item| match item {
+            ImplItem::Fn(method) if method.sig.ident == name => Some(method), _ => None,
+        }).collect();
+        assert_eq!(methods.len(), 1);
+        methods[0].to_tokens(&mut initial_methods);
+    }
+    fs::write(Path::new(&env::var("OUT_DIR").unwrap()).join("initial_handlers.rs"),
+        quote! { impl<'foa, 'vif, 'params> ConnectionOperation<'foa, 'vif, 'params> {
+            #initial_methods
+        } }.to_string()).unwrap();
     let retry_path = retry_path.to_str().unwrap();
     output.extend(quote! { #[path = #retry_path] mod rsn_retransmit; });
     let retry_handlers: Vec<_> = runner.items.iter().filter_map(|item| match item {

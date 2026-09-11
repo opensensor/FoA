@@ -70,6 +70,8 @@ pub use connection_state::ConnectionConfig;
 mod rsn;
 #[cfg(feature = "rsn")]
 mod rsn_retransmit;
+#[cfg(feature = "rsn")]
+mod rsn_initial;
 mod util;
 #[cfg(feature = "handshake-probe")]
 pub mod handshake_probe;

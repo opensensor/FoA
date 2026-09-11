@@ -21,7 +21,10 @@ const GTK: [u8; 16] = [0; 16];
 const ANONCE: [u8; 32] = [0x31; 32];
 const SNONCE: [u8; 32] = [0x32; 32];
 
-fn m3_with(counter: u64, nonce: [u8; 32], gtk: [u8; 16], key_id: u8) -> Vec<u8> {
+pub(super) fn m3_with(counter: u64, nonce: [u8; 32], gtk: [u8; 16], key_id: u8) -> Vec<u8> {
+    m3_with_gtk_bytes(counter, nonce, &gtk, key_id)
+}
+pub(super) fn m3_with_gtk_bytes(counter: u64, nonce: [u8; 32], gtk: &[u8], key_id: u8) -> Vec<u8> {
     let frame = DataFrame {
         header: DataFrameHeader {
             subtype: DataFrameSubtype::Data,
@@ -59,7 +62,7 @@ fn m3_with(counter: u64, nonce: [u8; 32], gtk: [u8; 16], key_id: u8) -> Vec<u8> 
     buffer.truncate(written);
     buffer
 }
-fn m3(counter: u64) -> Vec<u8> {
+pub(super) fn m3(counter: u64) -> Vec<u8> {
     m3_with(counter, ANONCE, GTK, 1)
 }
 fn accept(state: &mut Message3Replay, buffer: &mut [u8]) -> Option<u64> {
@@ -134,7 +137,7 @@ fn malformed_lengths_and_short_scratch_never_enter_unchecked_decoder_slices() {
     assert_eq!(accept(&mut state, &mut valid.clone()), Some(8));
 }
 
-fn ready<F: core::future::Future>(future: F) -> F::Output {
+pub(super) fn ready<F: core::future::Future>(future: F) -> F::Output {
     let mut future = core::pin::pin!(future);
     match future.as_mut().poll(&mut core::task::Context::from_waker(
         core::task::Waker::noop(),

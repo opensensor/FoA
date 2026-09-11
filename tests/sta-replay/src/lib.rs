@@ -89,3 +89,6 @@ mod tests;
 mod handshake_tests;
 #[cfg(test)]
 mod credentials_tests;
+
+#[cfg(test)]
+mod initial_tests;

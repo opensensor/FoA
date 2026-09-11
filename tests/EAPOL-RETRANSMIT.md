@@ -20,8 +20,9 @@ the current AP/station addresses, WPA2-PSK/CCMP flags and framing, MIC, authenti
 nonce, strictly increasing EAPOL replay counter, and unchanged GTK/key ID. It then
 uses the existing M4 serializer and transmit path. The context contains only the
 exchange nonces and EAPOL counter; the retry operation cannot access hardware key
-installation or modify data packet-number state. GTK rekeying, new pairwise
-handshakes and message-1 retries while waiting for message 3 remain separate work.
+installation or modify data packet-number state. GTK rekeying and new pairwise
+handshakes remain separate work. Initial message-1 retries are covered by the
+subsequent [M1 recovery change](M1-RECOVERY.md).
 
 `tests/run-sta-replay.sh` compiles the actual retry verifier and extracts the
 production background handler. Only the radio buffer/send boundary is replaced.

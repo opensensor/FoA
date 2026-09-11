@@ -26,6 +26,8 @@ pub struct Event {
 /// Kind 10 a is unverified KeyInformation; b bit 0 is connected, bit 1 retry.
 /// Kind 12 a is authenticated M3 retry accepted (1) or rejected (0).
 /// Kind 13 a is M4 retry result: 0 success, 1 failed completion.
+/// Kind 14 a=1 records a same-exchange M1 retry (unauthenticated).
+/// Kind 15 a is its M2 result: 0 success, 1 failed completion.
 #[derive(Clone, Copy, Debug)]
 #[allow(missing_docs)]
 pub struct Snapshot {

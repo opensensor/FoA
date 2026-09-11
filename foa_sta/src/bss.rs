@@ -196,7 +196,9 @@ impl BSS {
     }
 }
 #[cfg(feature = "rsn")]
-pub(crate) struct PskLengthMismatchError;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// A raw PSK has the wrong length for the requested key output.
+pub struct PskLengthMismatchError;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// Network credentials.
 pub enum Credentials<'a> {
@@ -208,6 +210,22 @@ pub enum Credentials<'a> {
     Passphrase(&'a str),
 }
 impl Credentials<'_> {
+    #[cfg(feature = "rsn")]
+    /// Prepare a 32-byte WPA2 PSK for reuse with [`Credentials::PreSharedKey`].
+    ///
+    /// Passphrase derivation is synchronous and expensive. Call this before
+    /// starting time-sensitive radio tasks, then retain the result for reconnects
+    /// to the same SSID with the same passphrase. Derive a new key when either
+    /// changes. A raw PSK is copied and must contain exactly 32 bytes.
+    ///
+    /// The returned bytes are secret key material. No key is cached globally,
+    /// and each connection still derives fresh session keys in its handshake.
+    pub fn derive_psk(&self, ssid: &str) -> Result<[u8; 32], PskLengthMismatchError> {
+        let mut psk = [0u8; 32];
+        self.pmk(&mut psk, ssid)?;
+        Ok(psk)
+    }
+
     #[cfg(feature = "rsn")]
     /// Get the PMK for the provided credentials.
     ///

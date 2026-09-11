@@ -87,3 +87,5 @@ mod operations {
 mod tests;
 #[cfg(test)]
 mod handshake_tests;
+#[cfg(test)]
+mod credentials_tests;

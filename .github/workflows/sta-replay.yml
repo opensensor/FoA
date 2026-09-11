@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - foa_sta/src/rsn.rs
+      - foa_sta/src/bss.rs
       - foa_sta/src/rsn_retransmit.rs
       - foa_sta/src/runner.rs
       - tests/sta-replay/**
@@ -12,6 +13,7 @@ on:
   pull_request:
     paths:
       - foa_sta/src/rsn.rs
+      - foa_sta/src/bss.rs
       - foa_sta/src/rsn_retransmit.rs
       - foa_sta/src/runner.rs
       - tests/sta-replay/**

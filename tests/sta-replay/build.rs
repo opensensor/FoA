@@ -14,13 +14,31 @@ fn main() {
     let root = Path::new(&manifest_dir).join("../..");
     let rsn_path = root.join("foa_sta/src/rsn.rs");
     let runner_path = root.join("foa_sta/src/runner.rs");
+    let credentials_path = root.join("foa_sta/src/bss.rs");
     let retry_path = root.join("foa_sta/src/rsn_retransmit.rs").canonicalize().unwrap();
-    for path in [&rsn_path, &runner_path, &retry_path] {
+    for path in [&rsn_path, &runner_path, &retry_path, &credentials_path] {
         println!("cargo:rerun-if-changed={}", path.display());
     }
     let rsn = syn::parse_file(&fs::read_to_string(rsn_path).unwrap()).unwrap();
     let runner = syn::parse_file(&fs::read_to_string(runner_path).unwrap()).unwrap();
     let mut output = quote! {};
+    // Compile the actual credential preparation API and its existing PBKDF2
+    // path without pulling chip-specific BSS scanning into this host crate.
+    let credentials = syn::parse_file(&fs::read_to_string(credentials_path).unwrap()).unwrap();
+    for name in ["Credentials", "PskLengthMismatchError"] {
+        let items: Vec<_> = credentials.items.iter().filter(|item| match item {
+            Item::Enum(item) => item.ident == name,
+            Item::Struct(item) => item.ident == name,
+            _ => false,
+        }).collect();
+        assert_eq!(items.len(), 1, "missing/ambiguous credential type {name}");
+        items[0].to_tokens(&mut output);
+    }
+    let impls: Vec<_> = credentials.items.iter().filter_map(|item| match item {
+        Item::Impl(item) if self_type(item, "Credentials") => Some(item), _ => None,
+    }).collect();
+    assert_eq!(impls.len(), 1);
+    impls[0].to_tokens(&mut output);
     for name in [
         "PMK_LENGTH",
         "PTK_LENGTH",

@@ -115,6 +115,8 @@ impl SecurityAssociations {
 }
 /// State of cryptographic management.
 pub(crate) struct CryptoState<'foa> {
+    /// Authenticated initial-exchange context, independent of data PN state.
+    pub message3_replay: crate::rsn_retransmit::Message3Replay,
     /// Key slot used for the GTK.
     pub gtk_key_slot: KeySlot<'foa>,
     /// Key slot used for the PTK.
@@ -128,8 +130,10 @@ impl<'foa> CryptoState<'foa> {
         ptk_key_slot: KeySlot<'foa>,
         bssid: [u8; 6],
         security_associations: SecurityAssociations,
+        message3_replay: crate::rsn_retransmit::Message3Replay,
     ) -> Self {
         let mut temp = Self {
+            message3_replay,
             gtk_key_slot,
             ptk_key_slot,
             security_associations,

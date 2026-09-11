@@ -47,6 +47,48 @@ pub(crate) struct ConnectionRunner<'foa, 'vif> {
     pub(crate) state_runner: StateRunner<'vif>,
 }
 impl ConnectionRunner<'_, '_> {
+    #[cfg(feature = "rsn")]
+    async fn handle_eapol_retry(&self, mut buffer: ReceivedFrame<'_>, info: &ConnectionInfo) {
+        let mut scratch = self.sta_tx_rx.tx_endpoint.alloc_tx_buf().await;
+        let reply = self
+            .sta_tx_rx
+            .map_crypto_state(|state| {
+                let sa = &state.security_associations;
+                let (kck, kek, _) =
+                    ieee80211::crypto::partition_ptk(&sa.ptksa.key, sa.akm_suite, sa.cipher_suite)?;
+                let kck: &[u8; 16] = kck.try_into().ok()?;
+                let kek: &[u8; 16] = kek.try_into().ok()?;
+                let counter = state.message3_replay.accept(
+                    buffer.mpdu_buffer_mut(),
+                    scratch.as_mut_slice(),
+                    kck,
+                    kek,
+                    &sa.gtksa.key,
+                    sa.gtksa.key_id,
+                    info.own_address,
+                    info.bss.bssid,
+                )?;
+                Some((*kck, state.message3_replay.supplicant_nonce, counter))
+            })
+            .flatten();
+        drop(scratch);
+        drop(buffer);
+        #[cfg(feature = "handshake-probe")]
+        crate::handshake_probe::event(12, reply.is_some() as u32, 0);
+        if let Some((kck, nonce, counter)) = reply {
+            let _result = crate::operations::connect::send_message_4(
+                self.sta_tx_rx,
+                info.bss.bssid,
+                info.own_address,
+                &kck,
+                &nonce,
+                counter,
+            )
+            .await;
+            #[cfg(feature = "handshake-probe")]
+            crate::handshake_probe::event(13, _result.is_err() as u32, 0);
+        }
+    }
     /// Handle a deauth frame.
     ///
     /// NOTE: Currently this immediately leads to disconnection.
@@ -105,7 +147,7 @@ impl ConnectionRunner<'_, '_> {
     /// This will return if we are deauthenticated or a beacon timeout occurs.
     async fn run_connection(
         &self,
-        ConnectionInfo {
+        info @ ConnectionInfo {
             bss,
             own_address,
             connection_config,
@@ -142,6 +184,13 @@ impl ConnectionRunner<'_, '_> {
                         .await;
                 }
                 Either3::Second(buffer) => {
+                    #[cfg(feature = "rsn")]
+                    if GenericFrame::new(buffer.mpdu_buffer(), false)
+                        .is_ok_and(|frame| frame.is_eapol_key_frame())
+                    {
+                        self.handle_eapol_retry(buffer, info).await;
+                        continue;
+                    }
                     if let Some(connection_rx_event) = self.handle_bg_rx(buffer) {
                         match connection_rx_event {
                             ConnectionRxEvent::Disconnected(disconnection_reason) => {
@@ -532,7 +581,35 @@ impl RoutingRunner<'_, '_> {
                 );
                 borrowed_buffer.timestamp()
             });
+            #[cfg(feature = "handshake-probe")]
+            let probe_kind = if generic_frame.is_eapol_key_frame() { 1 } else {
+                match generic_frame.frame_control_field().frame_type() {
+                    FrameType::Management(ieee80211::common::ManagementFrameSubtype::Authentication) => 2,
+                    FrameType::Management(ieee80211::common::ManagementFrameSubtype::AssociationResponse) => 3,
+                    FrameType::Management(ieee80211::common::ManagementFrameSubtype::Deauthentication) => 4,
+                    _ => 0,
+                }
+            };
+            #[cfg(feature = "handshake-probe")]
+            if probe_kind == 1 {
+                if let Some(Ok(frame)) = generic_frame.parse_to_typed::<DataFrame>() {
+                    if let Some(payload) = frame.payload {
+                        // LLC (8), EAPOL header (4), descriptor type (1), flags (2).
+                        // This is unverified metadata, never protocol input.
+                        if payload.get(9) == Some(&3) {
+                            if let Some(flags) = payload.get(13..15) {
+                                crate::handshake_probe::event(10,
+                                    u16::from_be_bytes([flags[0], flags[1]]) as u32,
+                                    self.sta_tx_rx.connection_state.connected() as u32
+                                        | ((frame.header.fcf_flags.retry() as u32) << 1));
+                            }
+                        }
+                    }
+                }
+            }
             let _route_result = self.rx_router_input.route_frame(borrowed_buffer);
+            #[cfg(feature = "handshake-probe")]
+            crate::handshake_probe::routed(probe_kind, _route_result.is_ok(), self.rx_router_input.queue_lengths());
             #[cfg(feature = "connection-trace")]
             if let Some(rx_timestamp) = management_trace {
                 log::info!(

@@ -181,6 +181,7 @@ name = "foa-sta-replay-host-tests"
 version = "0.1.0"
 dependencies = [
  "ieee80211",
+ "llc-rs",
  "log",
  "portable-atomic",
  "quote",

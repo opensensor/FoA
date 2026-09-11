@@ -46,6 +46,7 @@ mod tests {
 
     const OWN: [u8; 6] = [2, 0, 0, 0, 0, 1];
     const AP: [u8; 6] = [2, 0, 0, 0, 0, 2];
+    static MOCK_CLOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn ready<F: Future>(future: F) -> F::Output {
         let mut future = pin!(future);
@@ -158,14 +159,18 @@ mod tests {
         let (input, [_foreground, background]) = router.split();
         let state = ConnectionStateTracker::new();
         pending(state.wait_for_connection());
+        assert_eq!(input.queue_lengths(), [0, 0]);
         for _ in 0..RX_QUEUE_DEPTH {
             input.route_frame(ReceivedFrame { bytes: &bytes, drops: &drops }).unwrap();
         }
         assert_eq!(drops.get(), 0);
+        assert_eq!(input.queue_lengths(), [0, RX_QUEUE_DEPTH]);
+        assert_eq!(background.queue_lengths(), input.queue_lengths());
         assert!(matches!(input.route_frame(ReceivedFrame { bytes: &bytes, drops: &drops }), Err(RxRouterRoutingError::QueueFull)));
         assert_eq!(drops.get(), 1, "overflow drops only the new frame");
         for _ in 0..RX_QUEUE_DEPTH { drop(ready(background.receive())); }
         assert_eq!(drops.get(), RX_QUEUE_DEPTH + 1);
+        assert_eq!(background.queue_lengths(), [0, 0]);
     }
     #[test]
     fn queued_auth_duplicate_is_reinterpreted_as_association_status_two_without_revalidation() {
@@ -259,7 +264,7 @@ mod tests {
     #[test]
     fn filtering_near_deadline_does_not_restart_the_original_timeout() {
         use embassy_time::{Duration, MockDriver, WithTimeout};
-        // This is the only test that advances the process-global mock clock.
+        let _clock_guard = MOCK_CLOCK.lock().unwrap();
         let clock = MockDriver::get();
         clock.reset();
         let drops = Cell::new(0);
@@ -282,6 +287,40 @@ mod tests {
         assert_eq!(drops.get(), RX_QUEUE_DEPTH);
         clock.advance(Duration::from_millis(1));
         assert!(matches!(response.as_mut().poll(&mut Context::from_waker(Waker::noop())), Poll::Ready(Err(_))));
+    }
+
+    #[test]
+    fn flight_recorder_retains_post_completion_eapol_and_wraps_without_extending_storage() {
+        use embassy_time::{Duration, MockDriver};
+        use handshake_probe as probe;
+        let _clock_guard = MOCK_CLOCK.lock().unwrap();
+        let clock = MockDriver::get();
+        clock.reset();
+        clock.advance(Duration::from_micros(u32::MAX as u64 - 5));
+        probe::reset();
+        probe::phase(0);
+        clock.advance(Duration::from_micros(10));
+        probe::phase(1);
+        assert_eq!(probe::snapshot().phase_us[1], 10, "low timestamp wrap preserves elapsed time");
+        probe::phase(10);
+        probe::routed(1, true, [0, 1]);
+        probe::routed(1, false, [0, 4]);
+        let snapshot = probe::snapshot();
+        assert_eq!((snapshot.eapol_routed, snapshot.eapol_dropped), (1, 1));
+        assert_eq!(snapshot.queues, [0, 4]);
+        assert_eq!(snapshot.route_failures, 1);
+        probe::routed(0, false, [0, 4]);
+        assert_eq!(probe::snapshot().total_events, snapshot.total_events);
+        for index in 0..80 { probe::event(10, index, 0); }
+        let snapshot = probe::snapshot();
+        let retained: Vec<_> = (snapshot.total_events - 64..snapshot.total_events)
+            .map(|i| snapshot.events[i as usize % 64].a).collect();
+        assert_eq!(retained, (16..80).collect::<Vec<_>>());
+        probe::reset();
+        let empty = probe::snapshot();
+        assert_eq!(empty.phase_us, [u32::MAX; 11]);
+        assert_eq!(empty.total_events, 0);
+        assert_eq!(empty.eapol_routed, 0);
     }
 
     #[test]

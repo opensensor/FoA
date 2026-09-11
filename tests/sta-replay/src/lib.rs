@@ -1,4 +1,4 @@
-#![allow(dead_code)]
+#![allow(dead_code, unexpected_cfgs)]
 
 use core::sync::atomic::Ordering;
 use ieee80211::{
@@ -13,9 +13,12 @@ use std::cell::RefCell;
 
 struct CryptoState {
     security_associations: SecurityAssociations,
+    message3_replay: rsn_retransmit::Message3Replay,
 }
 struct StaTxRx {
     crypto_state: RefCell<Option<CryptoState>>,
+    tx_endpoint: MockTxEndpoint,
+    replies: RefCell<Vec<(u64, [u8; 16], [u8; 32])>>,
 }
 impl StaTxRx {
     fn map_crypto_state<O>(&self, f: impl FnOnce(&mut CryptoState) -> O) -> Option<O> {
@@ -30,7 +33,10 @@ impl RoutingRunner {
     fn new() -> Self {
         Self {
             sta_tx_rx: StaTxRx {
+                tx_endpoint: MockTxEndpoint,
+                replies: RefCell::new(Vec::new()),
                 crypto_state: RefCell::new(Some(CryptoState {
+                    message3_replay: rsn_retransmit::Message3Replay::new([0x31; 32], [0x32; 32], 7),
                     security_associations: SecurityAssociations {
                         ptksa: TransientKeySecurityAssociation::new([0; PTK_LENGTH], 0),
                         gtksa: TransientKeySecurityAssociation::new([0; GTK_LENGTH], 1),
@@ -52,5 +58,32 @@ impl RoutingRunner {
 
 include!(concat!(env!("OUT_DIR"), "/production.rs"));
 
+mod rsn { pub(crate) use super::WPA2_PSK_AKM; }
+struct MockTxEndpoint;
+impl MockTxEndpoint {
+    async fn alloc_tx_buf(&self) -> Vec<u8> { vec![0; 512] }
+}
+struct ConnectionRunner<'a> { sta_tx_rx: &'a StaTxRx }
+struct ReceivedFrame<'a> { bytes: &'a mut [u8] }
+impl ReceivedFrame<'_> {
+    fn mpdu_buffer_mut(&mut self) -> &mut [u8] { self.bytes }
+}
+struct Bss { bssid: MACAddress }
+struct ConnectionInfo { bss: Bss, own_address: MACAddress }
+mod operations {
+    pub(crate) mod connect {
+        use super::super::*;
+        pub(crate) async fn send_message_4(
+            sta: &StaTxRx, _: MACAddress, _: MACAddress, kck: &[u8; 16],
+            nonce: &[u8; 32], counter: u64,
+        ) -> Result<(), ()> {
+            sta.replies.borrow_mut().push((counter, *kck, *nonce));
+            Ok(())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod handshake_tests;

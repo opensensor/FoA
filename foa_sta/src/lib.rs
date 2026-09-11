@@ -68,7 +68,11 @@ mod connection_state;
 pub use connection_state::ConnectionConfig;
 #[cfg(feature = "rsn")]
 mod rsn;
+#[cfg(feature = "rsn")]
+mod rsn_retransmit;
 mod util;
+#[cfg(feature = "handshake-probe")]
+pub mod handshake_probe;
 
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

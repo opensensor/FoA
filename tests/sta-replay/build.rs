@@ -14,7 +14,8 @@ fn main() {
     let root = Path::new(&manifest_dir).join("../..");
     let rsn_path = root.join("foa_sta/src/rsn.rs");
     let runner_path = root.join("foa_sta/src/runner.rs");
-    for path in [&rsn_path, &runner_path] {
+    let retry_path = root.join("foa_sta/src/rsn_retransmit.rs").canonicalize().unwrap();
+    for path in [&rsn_path, &runner_path, &retry_path] {
         println!("cargo:rerun-if-changed={}", path.display());
     }
     let rsn = syn::parse_file(&fs::read_to_string(rsn_path).unwrap()).unwrap();
@@ -80,6 +81,16 @@ fn main() {
         selected[0].to_tokens(&mut methods);
     }
     output.extend(quote! { impl RoutingRunner { #methods } });
+    let retry_path = retry_path.to_str().unwrap();
+    output.extend(quote! { #[path = #retry_path] mod rsn_retransmit; });
+    let retry_handlers: Vec<_> = runner.items.iter().filter_map(|item| match item {
+        Item::Impl(item) if self_type(item, "ConnectionRunner") => Some(item), _ => None,
+    }).flat_map(|item| item.items.iter()).filter_map(|item| match item {
+        ImplItem::Fn(method) if method.sig.ident == "handle_eapol_retry" => Some(method), _ => None,
+    }).collect();
+    assert_eq!(retry_handlers.len(), 1);
+    let handler = retry_handlers[0];
+    output.extend(quote! { impl ConnectionRunner<'_> { #handler } });
     fs::write(
         Path::new(&env::var("OUT_DIR").unwrap()).join("production.rs"),
         output.to_string(),

@@ -126,6 +126,7 @@ trait Router<'foa, Operation: RxRouterOperation> {
     fn operation_state(&self, router_queue: RxRouterQueue) -> &Cell<Option<Operation>>;
     /// Get the operation completion signal.
     fn completion_signal(&self) -> &Signal<NoopRawMutex, ()>;
+    fn queue_len(&self, router_queue: RxRouterQueue) -> usize;
 }
 
 /// State of one of the router queues.
@@ -264,6 +265,9 @@ impl<'foa, const QUEUE_DEPTH: usize, Operation: RxRouterOperation> Router<'foa, 
     fn completion_signal(&self) -> &Signal<NoopRawMutex, ()> {
         &self.completion_signal
     }
+    fn queue_len(&self, router_queue: RxRouterQueue) -> usize {
+        self.queue_state(router_queue).queue.len()
+    }
 }
 impl<const QUEUE_DEPTH: usize, Operation: RxRouterOperation> Default
     for RxRouter<'_, QUEUE_DEPTH, Operation>
@@ -279,6 +283,11 @@ pub struct RxRouterInput<'foa, 'router, Operation: RxRouterOperation> {
 }
 
 impl<'foa, Operation: RxRouterOperation> RxRouterInput<'foa, '_, Operation> {
+    /// Observe foreground and background queue lengths without consuming frames.
+    pub fn queue_lengths(&self) -> [usize; 2] {
+        [self.rx_router.queue_len(RxRouterQueue::Foreground),
+         self.rx_router.queue_len(RxRouterQueue::Background)]
+    }
     /// Route the provided frame to the correct queue.
     pub fn route_frame(&self, frame: ReceivedFrame<'foa>) -> Result<(), RxRouterRoutingError> {
         self.rx_router.route_frame(frame)
@@ -349,6 +358,11 @@ pub struct RxRouterEndpoint<'foa, 'router, Operation: RxRouterOperation> {
     router_queue: RxRouterQueue,
 }
 impl<'foa, 'router, Operation: RxRouterOperation> RxRouterEndpoint<'foa, 'router, Operation> {
+    /// Observe foreground and background queue lengths without consuming frames.
+    pub fn queue_lengths(&self) -> [usize; 2] {
+        [self.rx_router.queue_len(RxRouterQueue::Foreground),
+         self.rx_router.queue_len(RxRouterQueue::Background)]
+    }
     /// Get the router queue of this endpoint.
     pub const fn router_queue(&self) -> RxRouterQueue {
         self.router_queue

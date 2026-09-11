@@ -10,7 +10,8 @@ fn main() {
     let router = root.join("foa/src/util/rx_router.rs");
     let sta_router = root.join("foa_sta/src/rx_router.rs");
     let state = root.join("foa_sta/src/connection_state.rs");
-    for path in [&runner, &router, &sta_router, &state] {
+    let probe = root.join("foa_sta/src/handshake_probe.rs");
+    for path in [&runner, &router, &sta_router, &state, &probe] {
         println!("cargo:rerun-if-changed={}", path.display());
     }
     let parsed = syn::parse_file(&fs::read_to_string(runner).unwrap()).unwrap();
@@ -36,10 +37,12 @@ fn main() {
     let router = router.to_str().unwrap();
     let sta_router = sta_router.to_str().unwrap();
     let state = state.to_str().unwrap();
+    let probe = probe.to_str().unwrap();
     let output = quote! {
         pub mod util { #[path = #router] pub mod rx_router; }
         #[path = #sta_router] mod rx_router;
         #[path = #state] mod connection_state;
+        #[path = #probe] mod handshake_probe;
         #event
         impl ConnectionRunner { #handlers }
     };

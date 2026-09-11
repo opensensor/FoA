@@ -7,6 +7,7 @@ on:
       - foa_sta/src/rx_router.rs
       - foa_sta/src/runner.rs
       - foa_sta/src/connection_state.rs
+      - foa_sta/src/handshake_probe.rs
       - foa_sta/src/operations/connect.rs
       - tests/stale-deauth/**
       - tests/run-stale-deauth.sh
@@ -17,6 +18,7 @@ on:
       - foa_sta/src/rx_router.rs
       - foa_sta/src/runner.rs
       - foa_sta/src/connection_state.rs
+      - foa_sta/src/handshake_probe.rs
       - foa_sta/src/operations/connect.rs
       - tests/stale-deauth/**
       - tests/run-stale-deauth.sh

@@ -7,7 +7,7 @@ use ieee80211::{
     scroll::{Pread, Pwrite},
 };
 
-fn mpdu(pn: u64, group: bool, retry: bool, amsdu: bool) -> Vec<u8> {
+pub(super) fn mpdu(pn: u64, group: bool, retry: bool, amsdu: bool) -> Vec<u8> {
     let mut payload = Vec::new();
     if amsdu {
         // Two complete software-deaggregated subframes in one protected MPDU.
@@ -115,7 +115,7 @@ fn one_amsdu_payload_gate_preserves_all_subframes() {
         .potentially_wrapped_payload(Some(MicState::NotPresent))
         .unwrap();
     let Some(DataFrameReadPayload::AMSDU(frames)) =
-        runner.process_potentially_wrapped_payload(false, wrapped)
+        runner.process_potentially_wrapped_payload(false, 0, wrapped)
     else {
         panic!("first aggregate must pass the payload gate");
     };
@@ -127,7 +127,7 @@ fn one_amsdu_payload_gate_preserves_all_subframes() {
     );
     assert!(
         runner
-            .process_potentially_wrapped_payload(false, wrapped)
+            .process_potentially_wrapped_payload(false, 0, wrapped)
             .is_none()
     );
 }

@@ -70,6 +70,24 @@ fn main() {
     assert_eq!(associations.len(), 1);
     associations[0].to_tokens(&mut output);
 
+    let group_path = root.join("foa_sta/src/rsn_group.rs").canonicalize().unwrap();
+    println!("cargo:rerun-if-changed={}", group_path.display());
+    let group_path = group_path.to_str().unwrap();
+    output.extend(quote! { #[path = #group_path] mod rsn_group; });
+    for item in &rsn.items {
+        if let Item::Impl(item) = item {
+            if self_type(item, "SecurityAssociations") { item.to_tokens(&mut output); }
+            if self_type(item, "CryptoState") {
+                let selected: Vec<_> = item.items.iter().filter_map(|i| match i {
+                    ImplItem::Fn(m) if m.sig.ident == "accept_group_message" => Some(m), _ => None,
+                }).collect();
+                assert_eq!(selected.len(), 1);
+                let method = selected[0];
+                output.extend(quote! { impl CryptoState { #method } });
+            }
+        }
+    }
+
     // Compile the actual replay-gate and data-routing methods. The radio and
     // final network-buffer sink are replaced; no second replay implementation.
     let routing: Vec<_> = runner

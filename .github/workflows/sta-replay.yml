@@ -3,6 +3,9 @@ name: Station replay protection
 on:
   push:
     paths:
+      - foa_sta/src/rsn_group.rs
+      - foa_sta/src/control.rs
+      - foa_sta/Cargo.toml
       - foa_sta/src/rsn.rs
       - foa_sta/src/bss.rs
       - foa_sta/src/rsn_retransmit.rs
@@ -14,6 +17,9 @@ on:
       - .github/workflows/sta-replay.yml
   pull_request:
     paths:
+      - foa_sta/src/rsn_group.rs
+      - foa_sta/src/control.rs
+      - foa_sta/Cargo.toml
       - foa_sta/src/rsn.rs
       - foa_sta/src/bss.rs
       - foa_sta/src/rsn_retransmit.rs

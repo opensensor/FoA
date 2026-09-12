@@ -34,6 +34,38 @@ pub struct StaControl<'foa, 'vif> {
     pub(crate) mac_address: MACAddress,
 }
 impl<'foa, 'vif> StaControl<'foa, 'vif> {
+    /// Diagnostic: ask the current AP to rotate its group key using an
+    /// authenticated EAPOL-Key Request. This can rotate the key for every STA
+    /// in the BSS; it is opt-in and never called by normal connection handling.
+    #[cfg(all(feature = "rsn", feature = "handshake-probe"))]
+    pub async fn request_group_rekey(&mut self) -> Result<(), StaError> {
+        let info = self
+            .sta_tx_rx
+            .connection_state
+            .connection_info()
+            .ok_or(StaError::NotConnected)?;
+        let (kck, counter) = self
+            .sta_tx_rx
+            .map_crypto_state(|state| {
+                let sa = &state.security_associations;
+                let (kck, _, _) =
+                    ieee80211::crypto::partition_ptk(&sa.ptksa.key, sa.akm_suite, sa.cipher_suite)?;
+                let kck: [u8; 16] = kck.try_into().ok()?;
+                let counter = state.group_request_counter;
+                state.group_request_counter = counter.checked_add(1)?;
+                Some((kck, counter))
+            })
+            .flatten()
+            .ok_or(StaError::GroupKeyHandshakeFailure)?;
+        connect::send_group_request(
+            self.sta_tx_rx,
+            info.bss.bssid,
+            info.own_address,
+            &kck,
+            counter,
+        )
+        .await
+    }
     /// Set the MAC address for the STA interface.
     pub fn set_mac_address(&mut self, mac_address: [u8; 6]) -> Result<(), StaError> {
         if self.sta_tx_rx.connection_state.connection_info().is_some() {

@@ -12,9 +12,9 @@ The [OpenSensor ESP repository index](https://github.com/opensensor/esp-wifi-hal
 links the related driver, stack, register definitions and reverse-engineering tools.
 Original history, credits and licenses are retained.
 
-This fork initially preserves upstream code. The S3 results in the repository
-index apply to the Rust driver's recorded dependencies; they do not establish
-hardware validation of this repository's current default branch.
+OpenSensor changes include station TX/replay fixes, handshake retry handling,
+and [WPA2 group-key rotation](GTK-REKEY.md). The linked validation reports name
+the tested hardware, source revisions and remaining limitations.
 
 ## Upstream documentation
 

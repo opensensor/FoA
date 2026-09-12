@@ -25,6 +25,9 @@ pub(super) fn m3_with(counter: u64, nonce: [u8; 32], gtk: [u8; 16], key_id: u8) 
     m3_with_gtk_bytes(counter, nonce, &gtk, key_id)
 }
 pub(super) fn m3_with_gtk_bytes(counter: u64, nonce: [u8; 32], gtk: &[u8], key_id: u8) -> Vec<u8> {
+    key_with(counter, nonce, gtk, key_id, 0x13ca, 0)
+}
+pub(super) fn key_with(counter: u64, nonce: [u8; 32], gtk: &[u8], key_id: u8, flags: u16, rsc: u64) -> Vec<u8> {
     let frame = DataFrame {
         header: DataFrameHeader {
             subtype: DataFrameSubtype::Data,
@@ -38,8 +41,8 @@ pub(super) fn m3_with_gtk_bytes(counter: u64, nonce: [u8; 32], gtk: &[u8], key_i
             oui: [0; 3],
             ether_type: EtherType::Eapol,
             payload: EapolKeyFrame {
-                key_information: KeyInformation::from_bits(0x13ca),
-                key_length: 16,
+                key_information: KeyInformation::from_bits(flags),
+                key_length: if flags == 0x1382 { 0 } else { 16 },
                 key_replay_counter: counter,
                 key_nonce: nonce,
                 key_mic: [0u8; 16],
@@ -48,7 +51,7 @@ pub(super) fn m3_with_gtk_bytes(counter: u64, nonce: [u8; 32], gtk: &[u8], key_i
                     _phantom: PhantomData,
                 } },
                 key_iv: 0,
-                key_rsc: 0,
+                key_rsc: u64::from_be_bytes(rsc.to_le_bytes()),
                 _phantom: PhantomData,
             },
             _phantom: PhantomData,
@@ -154,7 +157,7 @@ fn actual_background_handler_replies_without_reinstalling_or_resetting_data_coun
     sta.map_crypto_state(|state| {
         let sa = &state.security_associations;
         assert!(sa.ptksa.update_and_validate_replay_counter(45));
-        assert!(sa.gtksa.update_and_validate_replay_counter(63));
+        assert!(sa.active_group_key().update_and_validate_replay_counter(63));
         for n in 1..=5 {
             assert_eq!(sa.ptksa.next_packet_number(), n);
         }
@@ -172,9 +175,9 @@ fn actual_background_handler_replies_without_reinstalling_or_resetting_data_coun
     sta.map_crypto_state(|state| {
         let sa = &state.security_associations;
         assert!(!sa.ptksa.update_and_validate_replay_counter(45));
-        assert!(!sa.gtksa.update_and_validate_replay_counter(63));
+        assert!(!sa.active_group_key().update_and_validate_replay_counter(63));
         assert_eq!(sa.ptksa.next_packet_number(), 6);
         assert_eq!(sa.ptksa.key, [0; PTK_LENGTH]);
-        assert_eq!(sa.gtksa.key, GTK);
+        assert_eq!(sa.active_group_key().key, GTK);
     });
 }

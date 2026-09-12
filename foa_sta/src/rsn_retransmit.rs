@@ -13,6 +13,13 @@ pub(crate) struct Message3Replay {
     replay_counter: u64,
 }
 impl Message3Replay {
+    pub fn counter(&self) -> u64 {
+        self.replay_counter
+    }
+    /// Caller has authenticated a new EAPOL exchange and committed its key.
+    pub fn advance(&mut self, counter: u64) {
+        self.replay_counter = counter;
+    }
     pub fn new(
         authenticator_nonce: [u8; 32],
         supplicant_nonce: [u8; 32],
@@ -57,6 +64,25 @@ pub(crate) fn key_payload(
     own_address: MACAddress,
     bssid: MACAddress,
 ) -> Option<&[u8]> {
+    key_envelope(buffer, own_address, bssid, false)
+}
+
+/// RSN group messages commonly use Key Length zero; older APs use 16 for CCMP.
+/// Keep the initial pairwise exchange's separate length-16 contract unchanged.
+pub(crate) fn group_key_payload(
+    buffer: &[u8],
+    own_address: MACAddress,
+    bssid: MACAddress,
+) -> Option<&[u8]> {
+    key_envelope(buffer, own_address, bssid, true)
+}
+
+fn key_envelope(
+    buffer: &[u8],
+    own_address: MACAddress,
+    bssid: MACAddress,
+    group: bool,
+) -> Option<&[u8]> {
     let generic = GenericFrame::new(buffer, false).ok()?;
     let frame = generic.parse_to_typed::<DataFrame>()?.ok()?;
     if frame.header.address_1 != own_address
@@ -76,7 +102,7 @@ pub(crate) fn key_payload(
         || !matches!(eapol[0], 1 | 2)
         || eapol[1] != 3
         || eapol[4] != 2
-        || u16::from_be_bytes([eapol[7], eapol[8]]) != 16
+        || !(u16::from_be_bytes([eapol[7], eapol[8]]) == 16 || group && eapol[7..9] == [0, 0])
     {
         return None;
     }

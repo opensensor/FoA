@@ -49,7 +49,10 @@ struct ConnectionOperation<'foa, 'vif, 'params> {
     connection_parameters: &'params ConnectionParameters<'params>,
 }
 macro_rules! probe_phase {
-    ($phase:expr) => { #[cfg(feature = "handshake-probe")] crate::handshake_probe::phase($phase); };
+    ($phase:expr) => {
+        #[cfg(feature = "handshake-probe")]
+        crate::handshake_probe::phase($phase);
+    };
 }
 macro_rules! probe_event {
     ($kind:expr, $a:expr, $b:expr) => {
@@ -57,8 +60,10 @@ macro_rules! probe_event {
         crate::handshake_probe::event($kind, $a, $b);
     };
 }
+#[cfg(all(feature = "rsn", feature = "handshake-probe"))]
+pub(crate) use private::send_group_request;
 #[cfg(feature = "rsn")]
-pub(crate) use private::send_message_4;
+pub(crate) use private::{send_group_message_2, send_message_4};
 #[cfg(feature = "rsn")]
 mod private {
     use core::marker::PhantomData;
@@ -79,9 +84,7 @@ mod private {
         },
         data_frame::{DataFrame, header::DataFrameHeader},
         element_chain,
-        elements::{
-            rsn::{IEEE80211CipherSuiteSelector, RsnElement},
-        },
+        elements::rsn::{IEEE80211CipherSuiteSelector, RsnElement},
         mac_parser::MACAddress,
         scroll::{self, ctx::TryIntoCtx},
     };
@@ -127,6 +130,57 @@ mod private {
         )
         .await
     }
+    pub(crate) async fn send_group_message_2(
+        sta_tx_rx: &StaTxRx<'_, '_>,
+        bssid: MACAddress,
+        own_address: MACAddress,
+        kck: &[u8; 16],
+        key_replay_counter: u64,
+    ) -> Result<(), StaError> {
+        super::ConnectionOperation::send_eapol_key_frame(
+            sta_tx_rx,
+            bssid,
+            own_address,
+            EapolKeyFrame {
+                key_information: KeyInformation::from_bits(0x0302),
+                key_length: 0,
+                key_replay_counter,
+                key_nonce: [0; 32],
+                key_mic: [0u8; 16].as_slice(),
+                key_data: element_chain! {},
+                ..Default::default()
+            },
+            Some(kck),
+            None,
+        )
+        .await
+    }
+    #[cfg(feature = "handshake-probe")]
+    pub(crate) async fn send_group_request(
+        sta_tx_rx: &StaTxRx<'_, '_>,
+        bssid: MACAddress,
+        own_address: MACAddress,
+        kck: &[u8; 16],
+        key_replay_counter: u64,
+    ) -> Result<(), StaError> {
+        super::ConnectionOperation::send_eapol_key_frame(
+            sta_tx_rx,
+            bssid,
+            own_address,
+            EapolKeyFrame {
+                key_information: KeyInformation::from_bits(0x0b02),
+                key_length: 0,
+                key_replay_counter,
+                key_nonce: [0; 32],
+                key_mic: [0u8; 16].as_slice(),
+                key_data: element_chain! {},
+                ..Default::default()
+            },
+            Some(kck),
+            None,
+        )
+        .await
+    }
     impl<'foa, 'vif, 'params> super::ConnectionOperation<'foa, 'vif, 'params> {
         /// Transmit an EAPOL key frame, with the specified parameters.
         pub(crate) async fn send_eapol_key_frame<
@@ -161,8 +215,22 @@ mod private {
             };
             let mut tx_buffer = sta_tx_rx.tx_endpoint.alloc_tx_buf().await;
             let (buffer, temp_buffer) = tx_buffer.split_at_mut(500);
-            let written =
+            let mut written =
                 serialize_eapol_data_frame(kck, kek, data_frame, buffer, temp_buffer).unwrap();
+            // Once PTK is installed, EAPOL uses the same protected transmit
+            // path as data. Initial M2/M4 remain clear before CryptoState exists.
+            let key_slot_index = if let Some((pn, slot)) = sta_tx_rx.map_crypto_state(|state| {
+                (
+                    state.security_associations.ptksa.next_packet_number(),
+                    state.ptk_key_slot.key_slot(),
+                )
+            }) {
+                written = crate::rsn_group::protect_eapol(tx_buffer.as_mut_slice(), written, pn)
+                    .ok_or(StaError::GroupKeyHandshakeFailure)?;
+                Some(slot as u8)
+            } else {
+                None
+            };
             let res = sta_tx_rx
                 .tx_endpoint
                 .transmit_edca(
@@ -176,13 +244,22 @@ mod private {
                     TxMacParameters {
                         // The EAPOL data header starts with a placeholder.
                         override_seq_num: true,
+                        key_slot_index,
                         ..Default::default()
                     },
                     RetryBehaviour::RetryUntil(7),
                 )
                 .wait_for_completion()
                 .await;
-            probe_event!(8, match &res { Some(r) if r.result.is_ok() => 0, Some(_) => 1, None => 2 }, 0);
+            probe_event!(
+                8,
+                match &res {
+                    Some(r) if r.result.is_ok() => 0,
+                    Some(_) => 1,
+                    None => 2,
+                },
+                0
+            );
             if matches!(res, Some(TxReturnData { result: Err(_), .. })) {
                 debug!("4WHS step timeout.");
                 Err(StaError::AckTimeout)
@@ -199,7 +276,9 @@ mod private {
             loop {
                 let frame = router_operation.receive().await;
                 if let Some(pending) = crate::rsn_initial::InitialHandshake::from_message_1(
-                    frame.mpdu_buffer(), self.connection_parameters.own_address, bss.bssid,
+                    frame.mpdu_buffer(),
+                    self.connection_parameters.own_address,
+                    bss.bssid,
                 ) {
                     probe_event!(2, 0x008a, 0);
                     return pending;
@@ -249,19 +328,27 @@ mod private {
             loop {
                 let mut frame = router_operation.receive().await;
                 if let Some(counter) = pending.message_1_retry(
-                    frame.mpdu_buffer(), self.connection_parameters.own_address, bss.bssid,
+                    frame.mpdu_buffer(),
+                    self.connection_parameters.own_address,
+                    bss.bssid,
                 ) {
                     // Return the RX buffer before awaiting another transmission.
                     drop(frame);
                     probe_event!(14, 1, 0);
-                    let result = self.send_message_2(bss, kck, supplicant_nonce, counter).await;
+                    let result = self
+                        .send_message_2(bss, kck, supplicant_nonce, counter)
+                        .await;
                     probe_event!(15, if result.is_ok() { 0 } else { 1 }, 0);
                     result?;
                     continue;
                 }
                 if let Some(key) = pending.message_3(
-                    frame.mpdu_buffer_mut(), scratch_buffer.as_mut_slice(), kck, kek,
-                    self.connection_parameters.own_address, bss.bssid,
+                    frame.mpdu_buffer_mut(),
+                    scratch_buffer.as_mut_slice(),
+                    kck,
+                    kek,
+                    self.connection_parameters.own_address,
+                    bss.bssid,
                 ) {
                     probe_event!(4, 0x13ca, 0);
                     return Ok(TransientKeySecurityAssociation::new(key.gtk, key.gtk_id));
@@ -276,15 +363,22 @@ mod private {
             supplicant_nonce: &[u8; 32],
             key_replay_counter: u64,
         ) -> impl Future<Output = Result<(), StaError>> {
-            send_message_4(self.sta_tx_rx, bss.bssid,
-                self.connection_parameters.own_address, kck, supplicant_nonce, key_replay_counter)
+            send_message_4(
+                self.sta_tx_rx,
+                bss.bssid,
+                self.connection_parameters.own_address,
+                kck,
+                supplicant_nonce,
+                key_replay_counter,
+            )
         }
         pub(super) async fn do_4whs(
             &self,
             pmk: [u8; PMK_LENGTH],
             router_operation: &mut StaRxRouterScopedOperation<'foa, 'vif, 'params>,
             bss: &'params BSS,
-        ) -> Result<(SecurityAssociations, crate::rsn_retransmit::Message3Replay), StaError> {
+        ) -> Result<(SecurityAssociations, crate::rsn_retransmit::Message3Replay), StaError>
+        {
             use esp_hal::rng::Rng;
 
             router_operation.transition(
@@ -342,10 +436,17 @@ mod private {
             let scratch_buffer = self.sta_tx_rx.tx_endpoint.alloc_tx_buf().await;
 
             probe_phase!(8);
-            let gtk = self.process_message_3(
-                router_operation, scratch_buffer, bss, &kck, &kek,
-                &supplicant_nonce, &mut pending,
-            ).await?;
+            let gtk = self
+                .process_message_3(
+                    router_operation,
+                    scratch_buffer,
+                    bss,
+                    &kck,
+                    &kek,
+                    &supplicant_nonce,
+                    &mut pending,
+                )
+                .await?;
             debug!(
                 "Processed 4WHS message 3. GTK: {} GTK Key ID: {}",
                 HexWrapper(&gtk.key),
@@ -357,14 +458,23 @@ mod private {
                 .await?;
             debug!("Sent 4WHS message 4.");
 
-            Ok((SecurityAssociations {
-                ptksa: ptk,
-                gtksa: gtk,
-                akm_suite: WPA2_PSK_AKM,
-                cipher_suite: IEEE80211CipherSuiteSelector::Ccmp128,
-            }, crate::rsn_retransmit::Message3Replay::new(
-                authenticator_nonce, supplicant_nonce, pending.replay_counter,
-            )))
+            let active_group_id = gtk.key_id;
+            let mut group_keys = core::array::from_fn(|_| None);
+            group_keys[active_group_id as usize] = Some(gtk);
+            Ok((
+                SecurityAssociations {
+                    ptksa: ptk,
+                    group_keys,
+                    active_group_id,
+                    akm_suite: WPA2_PSK_AKM,
+                    cipher_suite: IEEE80211CipherSuiteSelector::Ccmp128,
+                },
+                crate::rsn_retransmit::Message3Replay::new(
+                    authenticator_nonce,
+                    supplicant_nonce,
+                    pending.replay_counter,
+                ),
+            ))
         }
     }
 }
@@ -574,7 +684,11 @@ impl<'foa, 'vif, 'params> ConnectionOperation<'foa, 'vif, 'params> {
         #[cfg(feature = "handshake-probe")]
         crate::handshake_probe::reset();
         probe_phase!(0);
-        probe_event!(9, rx_router_endpoint.queue_lengths()[0] as u32, rx_router_endpoint.queue_lengths()[1] as u32);
+        probe_event!(
+            9,
+            rx_router_endpoint.queue_lengths()[0] as u32,
+            rx_router_endpoint.queue_lengths()[1] as u32
+        );
         debug!(
             "Connecting to {} on channel {} with MAC address {}.",
             bss.bssid, bss.channel, self.connection_parameters.own_address
@@ -605,7 +719,7 @@ impl<'foa, 'vif, 'params> ConnectionOperation<'foa, 'vif, 'params> {
         let pmk_and_key_slots = if bss.security_config != SecurityConfig::Open
             && let Some(credentials) = self.connection_parameters.credentials
         {
-            let [gtk_key_slot, ptk_key_slot] = core::array::from_fn(|_| {
+            let [gtk0, gtk1, gtk2, gtk3, ptk_key_slot] = core::array::from_fn(|_| {
                 self.sta_tx_rx
                     .interface_control
                     .acquire_key_slot()
@@ -618,7 +732,7 @@ impl<'foa, 'vif, 'params> ConnectionOperation<'foa, 'vif, 'params> {
                 return Err(StaError::InvalidPskLength);
             }
             probe_phase!(2);
-            Some((pmk, gtk_key_slot?, ptk_key_slot?))
+            Some((pmk, [gtk0?, gtk1?, gtk2?, gtk3?], ptk_key_slot?))
         } else {
             None
         };
@@ -637,7 +751,8 @@ impl<'foa, 'vif, 'params> ConnectionOperation<'foa, 'vif, 'params> {
 
         #[cfg(feature = "rsn")]
         if let Some((pmk, gtk_key_slot, ptk_key_slot)) = pmk_and_key_slots {
-            let (crypto_keys, message3_replay) = self.do_4whs(pmk, &mut router_operation, bss).await?;
+            let (crypto_keys, message3_replay) =
+                self.do_4whs(pmk, &mut router_operation, bss).await?;
             probe_phase!(10);
             self.sta_tx_rx.crypto_state.lock(|rc| {
                 let _ = rc.borrow_mut().insert(crate::rsn::CryptoState::new(

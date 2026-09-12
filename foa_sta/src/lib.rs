@@ -72,6 +72,8 @@ mod rsn;
 mod rsn_retransmit;
 #[cfg(feature = "rsn")]
 mod rsn_initial;
+#[cfg(feature = "rsn")]
+mod rsn_group;
 mod util;
 #[cfg(feature = "handshake-probe")]
 pub mod handshake_probe;

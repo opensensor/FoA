@@ -49,6 +49,11 @@ pub(crate) struct ConnectionRunner<'foa, 'vif> {
 impl ConnectionRunner<'_, '_> {
     #[cfg(feature = "rsn")]
     async fn handle_eapol_retry(&self, mut buffer: ReceivedFrame<'_>, info: &ConnectionInfo) {
+        let Some((length, packet_number)) =
+            crate::rsn_group::normalize(buffer.mpdu_buffer_mut(), info.own_address, info.bss.bssid)
+        else {
+            return;
+        };
         let mut scratch = self.sta_tx_rx.tx_endpoint.alloc_tx_buf().await;
         let reply = self
             .sta_tx_rx
@@ -56,35 +61,92 @@ impl ConnectionRunner<'_, '_> {
                 let sa = &state.security_associations;
                 let (kck, kek, _) =
                     ieee80211::crypto::partition_ptk(&sa.ptksa.key, sa.akm_suite, sa.cipher_suite)?;
-                let kck: &[u8; 16] = kck.try_into().ok()?;
-                let kek: &[u8; 16] = kek.try_into().ok()?;
-                let counter = state.message3_replay.accept(
-                    buffer.mpdu_buffer_mut(),
-                    scratch.as_mut_slice(),
-                    kck,
-                    kek,
-                    &sa.gtksa.key,
-                    sa.gtksa.key_id,
+                let kck: [u8; 16] = kck.try_into().ok()?;
+                let kek: [u8; 16] = kek.try_into().ok()?;
+                // Check the hardware-authenticated outer packet before EAPOL state
+                // changes. Invalid EAPOL cannot install keys or advance its counter.
+                if let Some(pn) = packet_number {
+                    if !sa.ptksa.update_and_validate_replay_counter(pn) {
+                        return None;
+                    }
+                }
+                let bytes = &mut buffer.mpdu_buffer_mut()[..length];
+                let is_group = crate::rsn_retransmit::group_key_payload(
+                    bytes,
                     info.own_address,
                     info.bss.bssid,
-                )?;
-                Some((*kck, state.message3_replay.supplicant_nonce, counter))
+                )
+                .is_some_and(|key| u16::from_be_bytes([key[5], key[6]]) == 0x1382);
+                if is_group {
+                    let message = crate::rsn_group::decode_group_message_1(
+                        bytes,
+                        scratch.as_mut_slice(),
+                        &kck,
+                        &kek,
+                        info.own_address,
+                        info.bss.bssid,
+                    )?;
+                    let counter = message.counter;
+                    let installed = state.accept_group_message(message, *info.bss.bssid)?;
+                    #[cfg(feature = "connection-trace")]
+                    log::info!(
+                        "stage=gtk_update counter={} key_id={} installed={} protected={}",
+                        counter,
+                        state.security_associations.active_group_id,
+                        installed,
+                        packet_number.is_some()
+                    );
+                    let _ = installed;
+                    Some((kck, [0; 32], counter, true))
+                } else {
+                    let gtk = sa.active_group_key();
+                    let counter = state.message3_replay.accept(
+                        bytes,
+                        scratch.as_mut_slice(),
+                        &kck,
+                        &kek,
+                        &gtk.key,
+                        gtk.key_id,
+                        info.own_address,
+                        info.bss.bssid,
+                    )?;
+                    Some((kck, state.message3_replay.supplicant_nonce, counter, false))
+                }
             })
             .flatten();
         drop(scratch);
         drop(buffer);
         #[cfg(feature = "handshake-probe")]
         crate::handshake_probe::event(12, reply.is_some() as u32, 0);
-        if let Some((kck, nonce, counter)) = reply {
-            let _result = crate::operations::connect::send_message_4(
-                self.sta_tx_rx,
-                info.bss.bssid,
-                info.own_address,
-                &kck,
-                &nonce,
-                counter,
-            )
-            .await;
+        if let Some((kck, nonce, counter, group)) = reply {
+            let _result = if group {
+                crate::operations::connect::send_group_message_2(
+                    self.sta_tx_rx,
+                    info.bss.bssid,
+                    info.own_address,
+                    &kck,
+                    counter,
+                )
+                .await
+            } else {
+                crate::operations::connect::send_message_4(
+                    self.sta_tx_rx,
+                    info.bss.bssid,
+                    info.own_address,
+                    &kck,
+                    &nonce,
+                    counter,
+                )
+                .await
+            };
+            #[cfg(feature = "connection-trace")]
+            if group {
+                log::info!(
+                    "stage=gtk_reply counter={} success={}",
+                    counter,
+                    _result.is_ok()
+                );
+            }
             #[cfg(feature = "handshake-probe")]
             crate::handshake_probe::event(13, _result.is_err() as u32, 0);
         }
@@ -185,9 +247,7 @@ impl ConnectionRunner<'_, '_> {
                 }
                 Either3::Second(buffer) => {
                     #[cfg(feature = "rsn")]
-                    if GenericFrame::new(buffer.mpdu_buffer(), false)
-                        .is_ok_and(|frame| frame.is_eapol_key_frame())
-                    {
+                    if crate::rsn_group::is_key_frame(buffer.mpdu_buffer()) {
                         self.handle_eapol_retry(buffer, info).await;
                         continue;
                     }
@@ -398,6 +458,7 @@ impl RoutingRunner<'_, '_> {
     fn process_potentially_wrapped_payload<'a>(
         &self,
         is_group: bool,
+        key_id: u8,
         payload: PotentiallyWrappedPayload<DataFrameReadPayload<'a>>,
     ) -> Option<DataFrameReadPayload<'a>> {
         match payload {
@@ -410,14 +471,19 @@ impl RoutingRunner<'_, '_> {
                         let security_associations = &crypto_state.security_associations;
                         let packet_number = crypto_wrapper.crypto_header.packet_number();
                         let packet_number_valid = if is_group {
-                            security_associations
-                                .gtksa
-                                .update_and_validate_replay_counter(packet_number)
+                            security_associations.group_key(key_id).is_some_and(|key| {
+                                key.update_and_validate_replay_counter(packet_number)
+                            })
                         } else {
-                            security_associations
-                                .ptksa
-                                .update_and_validate_replay_counter(packet_number)
+                            key_id == 0
+                                && security_associations
+                                    .ptksa
+                                    .update_and_validate_replay_counter(packet_number)
                         };
+                        #[cfg(feature = "gtk-rekey-probe")]
+                        if is_group && packet_number_valid {
+                            log::info!("stage=gtk_data key_id={} pn={}", key_id, packet_number);
+                        }
                         packet_number_valid.then_some(crypto_wrapper.payload)
                     })
                     .flatten();
@@ -463,8 +529,20 @@ impl RoutingRunner<'_, '_> {
     fn handle_data_rx(&mut self, data_frame: DataFrame<'_, &[u8]>) -> Option<()> {
         let destination_address = data_frame.header.destination_address()?;
         let source_address = data_frame.header.source_address()?;
+        // ieee80211 0.5.9 decodes CCMP key_id with a left shift. Read the
+        // wire bits here and validate reserved bits before parsing it.
+        let key_id = if data_frame.header.fcf_flags.protected() {
+            let iv = data_frame.payload?.get(..8)?;
+            if iv[2] != 0 || iv[3] & 0x3f != 0x20 {
+                return None;
+            }
+            iv[3] >> 6
+        } else {
+            0
+        };
         let Some(payload) = self.process_potentially_wrapped_payload(
             destination_address.is_multicast(),
+            key_id,
             data_frame.potentially_wrapped_payload(Some(MicState::NotPresent))?,
         ) else {
             info!("Dropping MSDU.");
@@ -531,7 +609,11 @@ impl RoutingRunner<'_, '_> {
             }
             // To reduce latency, we process all data frames here directly, if we are connected.
             if self.sta_tx_rx.connection_state.connected() {
-                if generic_frame.is_eapol_key_frame() {
+                #[cfg(feature = "rsn")]
+                let is_eapol = crate::rsn_group::is_key_frame(borrowed_buffer.mpdu_buffer());
+                #[cfg(not(feature = "rsn"))]
+                let is_eapol = generic_frame.is_eapol_key_frame();
+                if is_eapol {
                     // This distinction is here, since GTK rekeys will happen, and those frames
                     // should go to the background task.
                     if !self.sta_tx_rx.rsna_activated() {
@@ -582,11 +664,19 @@ impl RoutingRunner<'_, '_> {
                 borrowed_buffer.timestamp()
             });
             #[cfg(feature = "handshake-probe")]
-            let probe_kind = if generic_frame.is_eapol_key_frame() { 1 } else {
+            let probe_kind = if generic_frame.is_eapol_key_frame() {
+                1
+            } else {
                 match generic_frame.frame_control_field().frame_type() {
-                    FrameType::Management(ieee80211::common::ManagementFrameSubtype::Authentication) => 2,
-                    FrameType::Management(ieee80211::common::ManagementFrameSubtype::AssociationResponse) => 3,
-                    FrameType::Management(ieee80211::common::ManagementFrameSubtype::Deauthentication) => 4,
+                    FrameType::Management(
+                        ieee80211::common::ManagementFrameSubtype::Authentication,
+                    ) => 2,
+                    FrameType::Management(
+                        ieee80211::common::ManagementFrameSubtype::AssociationResponse,
+                    ) => 3,
+                    FrameType::Management(
+                        ieee80211::common::ManagementFrameSubtype::Deauthentication,
+                    ) => 4,
                     _ => 0,
                 }
             };
@@ -598,10 +688,12 @@ impl RoutingRunner<'_, '_> {
                         // This is unverified metadata, never protocol input.
                         if payload.get(9) == Some(&3) {
                             if let Some(flags) = payload.get(13..15) {
-                                crate::handshake_probe::event(10,
+                                crate::handshake_probe::event(
+                                    10,
                                     u16::from_be_bytes([flags[0], flags[1]]) as u32,
                                     self.sta_tx_rx.connection_state.connected() as u32
-                                        | ((frame.header.fcf_flags.retry() as u32) << 1));
+                                        | ((frame.header.fcf_flags.retry() as u32) << 1),
+                                );
                             }
                         }
                     }
@@ -609,7 +701,11 @@ impl RoutingRunner<'_, '_> {
             }
             let _route_result = self.rx_router_input.route_frame(borrowed_buffer);
             #[cfg(feature = "handshake-probe")]
-            crate::handshake_probe::routed(probe_kind, _route_result.is_ok(), self.rx_router_input.queue_lengths());
+            crate::handshake_probe::routed(
+                probe_kind,
+                _route_result.is_ok(),
+                self.rx_router_input.queue_lengths(),
+            );
             #[cfg(feature = "connection-trace")]
             if let Some(rx_timestamp) = management_trace {
                 log::info!(

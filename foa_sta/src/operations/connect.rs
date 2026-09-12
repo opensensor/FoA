@@ -195,6 +195,9 @@ mod private {
             kck: Option<&[u8; 16]>,
             kek: Option<&[u8; 16]>,
         ) -> Result<(), StaError> {
+            // M4 retries must remain clear: our PTK may exist while the AP
+            // still waits for M4 and cannot decrypt that PTK yet.
+            let protect = !payload.key_information.is_pairwise();
             let data_frame = DataFrame {
                 header: DataFrameHeader {
                     subtype: DataFrameSubtype::Data,
@@ -217,14 +220,23 @@ mod private {
             let (buffer, temp_buffer) = tx_buffer.split_at_mut(500);
             let mut written =
                 serialize_eapol_data_frame(kck, kek, data_frame, buffer, temp_buffer).unwrap();
-            // Once PTK is installed, EAPOL uses the same protected transmit
-            // path as data. Initial M2/M4 remain clear before CryptoState exists.
-            let key_slot_index = if let Some((pn, slot)) = sta_tx_rx.map_crypto_state(|state| {
-                (
-                    state.security_associations.ptksa.next_packet_number(),
-                    state.ptk_key_slot.key_slot(),
+            // Group-key requests/replies use the established PTK. Pairwise
+            // handshake replies do not consume a data PN or require AP keys.
+            let tx_crypto = if protect {
+                Some(
+                    sta_tx_rx
+                        .map_crypto_state(|state| {
+                            (
+                                state.security_associations.ptksa.next_packet_number(),
+                                state.ptk_key_slot.key_slot(),
+                            )
+                        })
+                        .ok_or(StaError::GroupKeyHandshakeFailure)?,
                 )
-            }) {
+            } else {
+                None
+            };
+            let key_slot_index = if let Some((pn, slot)) = tx_crypto {
                 written = crate::rsn_group::protect_eapol(tx_buffer.as_mut_slice(), written, pn)
                     .ok_or(StaError::GroupKeyHandshakeFailure)?;
                 Some(slot as u8)

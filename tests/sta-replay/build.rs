@@ -127,6 +127,19 @@ fn main() {
         Item::Mod(item) if item.ident == "private" => item.content.as_ref().map(|(_,items)|items),
         _ => None,
     }).unwrap();
+    let sender = private.iter().filter_map(|item| match item {
+        Item::Impl(item) => Some(item), _ => None,
+    }).flat_map(|item| &item.items).find_map(|item| match item {
+        ImplItem::Fn(method) if method.sig.ident == "send_eapol_key_frame" => Some(method), _ => None,
+    }).unwrap();
+    let functions: Vec<_> = private.iter().filter_map(|item| match item {
+        Item::Fn(f) if f.sig.ident == "send_message_4" || f.sig.ident == "send_group_message_2" => Some(f), _ => None,
+    }).collect();
+    assert_eq!(functions.len(), 2);
+    fs::write(Path::new(&env::var("OUT_DIR").unwrap()).join("wire_senders.rs"),
+        quote! { impl ConnectionOperation { #sender }
+            mod private { use super::*; #(#functions)* }
+        }.to_string()).unwrap();
     let mut initial_methods = quote! {};
     for name in ["process_message_1", "process_message_3"] {
         let methods: Vec<_> = private.iter().filter_map(|item| match item {

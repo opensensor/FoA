@@ -13,6 +13,7 @@ use std::cell::RefCell;
 
 use rsn_group::GroupMessage1;
 struct CryptoState {
+    ptk_key_slot: MockKeySlot,
     last_group_message: Option<GroupMessage1>,
     key_writes: Vec<u8>,
     security_associations: SecurityAssociations,
@@ -28,6 +29,7 @@ struct StaTxRx {
     replies: RefCell<Vec<(u64, [u8; 16], [u8; 32])>>,
 }
 impl StaTxRx {
+    fn phy_rate(&self) -> u8 { 0 }
     fn map_crypto_state<O>(&self, f: impl FnOnce(&mut CryptoState) -> O) -> Option<O> {
         self.crypto_state.borrow_mut().as_mut().map(f)
     }
@@ -40,11 +42,12 @@ impl RoutingRunner {
     fn new() -> Self {
         Self {
             sta_tx_rx: StaTxRx {
-                tx_endpoint: MockTxEndpoint,
+                tx_endpoint: MockTxEndpoint::default(),
                 group_replies: RefCell::new(Vec::new()),
                 replies: RefCell::new(Vec::new()),
                 crypto_state: RefCell::new(Some(CryptoState {
                     last_group_message: None,
+                    ptk_key_slot: MockKeySlot,
                     key_writes: Vec::new(),
                     message3_replay: rsn_retransmit::Message3Replay::new([0x31; 32], [0x32; 32], 7),
                     security_associations: SecurityAssociations {
@@ -70,9 +73,12 @@ impl RoutingRunner {
 include!(concat!(env!("OUT_DIR"), "/production.rs"));
 
 mod rsn { pub(crate) use super::WPA2_PSK_AKM; }
-struct MockTxEndpoint;
+struct MockKeySlot;
+impl MockKeySlot { fn key_slot(&self) -> usize { 4 } }
+#[derive(Default)]
+struct MockTxEndpoint { transmissions: RefCell<Vec<(Vec<u8>, Option<u8>)>> }
 impl MockTxEndpoint {
-    async fn alloc_tx_buf(&self) -> Vec<u8> { vec![0; 512] }
+    async fn alloc_tx_buf(&self) -> Vec<u8> { vec![0; 2048] }
 }
 struct ConnectionRunner<'a> { sta_tx_rx: &'a StaTxRx }
 struct ReceivedFrame<'a> { bytes: &'a mut [u8] }
@@ -110,3 +116,6 @@ mod initial_tests;
 
 #[cfg(test)]
 mod group_tests;
+
+#[cfg(test)]
+mod wire_tests;

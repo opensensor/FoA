@@ -2,9 +2,10 @@
 
 `foa_sta` now handles the two-message group-key exchange while connected. It
 authenticates G1, installs the new GTK, and sends G2 using the existing PTK.
-Protected EAPOL is classified after the MAC-retained CCMP header. Initial
-pairwise handshake messages retain their original clear transmit path until
-the PTK exists.
+Protected EAPOL is classified after the MAC-retained CCMP header. Pairwise
+handshake replies, including M4 retries after the local PTK exists, stay clear:
+the AP may still be waiting for M4 before installing its PTK. Group requests
+and replies require the established PTK and cannot fall back to clear TX.
 
 The receive path selects a GTK and replay floor by the **wire key ID**. It
 retains old and new IDs through the AP's transition. An `ieee80211` 0.5.9 key-ID
@@ -29,9 +30,12 @@ WPA3, PMF, TKIP, or an AP-initiated pairwise-key replacement.
 
 The host harness extracts the production decoder, key-install policy, routing
 and connected EAPOL handler. Only radio key writes, TX completion and the final
-network sink are mocked. Twenty-eight debug/release tests cover initial and
+network sink are mocked. Thirty debug/release tests cover initial and
 retried handshakes, group transitions, replay floors, malformed envelopes,
 wrong MICs, key reuse, protected framing and data delivery under old/new IDs.
+The production EAPOL sender is also compiled and its radio submissions
+inspected: M4 retries stay clear without consuming a PTK PN, while G2 is
+protected and requires that PTK.
 The ten existing response/reconnect tests also pass.
 
 ```sh

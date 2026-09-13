@@ -272,11 +272,16 @@ mod private {
                 },
                 0
             );
-            if matches!(res, Some(TxReturnData { result: Err(_), .. })) {
-                debug!("4WHS step timeout.");
-                Err(StaError::AckTimeout)
-            } else {
-                Ok(())
+            match res {
+                Some(TxReturnData { result: Ok(_), .. }) => Ok(()),
+                Some(TxReturnData { result: Err(_), .. }) => {
+                    debug!("EAPOL transmission reported an error.");
+                    Err(StaError::AckTimeout)
+                }
+                None => {
+                    debug!("EAPOL transmission completion was lost; radio outcome is unknown.");
+                    Err(StaError::TxCompletionLost)
+                }
             }
         }
         /// Wait for a bounded M1 envelope from the selected AP.

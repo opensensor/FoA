@@ -30,12 +30,17 @@ WPA3, PMF, TKIP, or an AP-initiated pairwise-key replacement.
 
 The host harness extracts the production decoder, key-install policy, routing
 and connected EAPOL handler. Only radio key writes, TX completion and the final
-network sink are mocked. Thirty debug/release tests cover initial and
+network sink are mocked. Thirty-one debug/release tests cover initial and
 retried handshakes, group transitions, replay floors, malformed envelopes,
 wrong MICs, key reuse, protected framing and data delivery under old/new IDs.
 The production EAPOL sender is also compiled and its radio submissions
 inspected: M4 retries stay clear without consuming a PTK PN, while G2 is
 protected and requires that PTK.
+Injected successful, failed and missing completions exercise the actual M4,
+G2 and group-request senders. A missing completion returns
+`StaError::TxCompletionLost`: the radio outcome is unknown. It is never
+reported as success or automatically resubmitted. Each protected submission
+still consumes exactly one PTK packet number, including failed submissions.
 The ten existing response/reconnect tests also pass.
 
 ```sh
@@ -56,6 +61,9 @@ The `handshake-probe` feature exposes `StaControl::request_group_rekey()`.
 It sends a MIC-authenticated, PTK-protected EAPOL-Key Request. Its request
 counter is separate from AP replay counters. A request can rotate the key for
 **every station in the BSS**. Normal connection handling never calls it.
+An `Ok(())` result means the MAC reported successful transmission; AP-side
+observation is still needed to establish that it accepted the request and
+completed a rotation.
 No hostapd configuration change or test-only router command is required.
 
 `gtk-rekey-probe` additionally enables numeric group key-ID/PN receive tracing.

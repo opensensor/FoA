@@ -76,7 +76,10 @@ mod rsn { pub(crate) use super::WPA2_PSK_AKM; }
 struct MockKeySlot;
 impl MockKeySlot { fn key_slot(&self) -> usize { 4 } }
 #[derive(Default)]
-struct MockTxEndpoint { transmissions: RefCell<Vec<(Vec<u8>, Option<u8>)>> }
+struct MockTxEndpoint {
+    transmissions: RefCell<Vec<(Vec<u8>, Option<u8>)>>,
+    completions: RefCell<std::collections::VecDeque<Option<Result<(), ()>>>>,
+}
 impl MockTxEndpoint {
     async fn alloc_tx_buf(&self) -> Vec<u8> { vec![0; 2048] }
 }

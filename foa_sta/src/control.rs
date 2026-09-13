@@ -37,6 +37,9 @@ impl<'foa, 'vif> StaControl<'foa, 'vif> {
     /// Diagnostic: ask the current AP to rotate its group key using an
     /// authenticated EAPOL-Key Request. This can rotate the key for every STA
     /// in the BSS; it is opt-in and never called by normal connection handling.
+    /// Success means the MAC reported successful transmission, not that the AP
+    /// rotated its key. A missing completion returns [`StaError::TxCompletionLost`];
+    /// the radio outcome is unknown and the request is not automatically resubmitted.
     #[cfg(all(feature = "rsn", feature = "handshake-probe"))]
     pub async fn request_group_rekey(&mut self) -> Result<(), StaError> {
         let info = self

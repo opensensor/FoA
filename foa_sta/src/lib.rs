@@ -88,6 +88,8 @@ pub enum StaError {
     UnableToFindEss,
     /// No ACK was received in time.
     AckTimeout,
+    /// The TX completion was lost; whether the frame reached the peer is unknown.
+    TxCompletionLost,
     /// No response from the BSS was received in time, although an ACK was received.
     ResponseTimeout,
     /// Deserializing a received frame failed.

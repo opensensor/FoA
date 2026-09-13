@@ -133,9 +133,19 @@ fn main() {
         ImplItem::Fn(method) if method.sig.ident == "send_eapol_key_frame" => Some(method), _ => None,
     }).unwrap();
     let functions: Vec<_> = private.iter().filter_map(|item| match item {
-        Item::Fn(f) if f.sig.ident == "send_message_4" || f.sig.ident == "send_group_message_2" => Some(f), _ => None,
+        Item::Fn(f) if f.sig.ident == "send_message_4"
+            || f.sig.ident == "send_group_message_2"
+            || f.sig.ident == "send_group_request" => {
+                let mut function = f.clone();
+                // Exercise the real diagnostic request body in this host crate
+                // without importing its firmware feature configuration.
+                if function.sig.ident == "send_group_request" {
+                    function.attrs.retain(|attr| !attr.path().is_ident("cfg"));
+                }
+                Some(function)
+            }, _ => None,
     }).collect();
-    assert_eq!(functions.len(), 2);
+    assert_eq!(functions.len(), 3);
     fs::write(Path::new(&env::var("OUT_DIR").unwrap()).join("wire_senders.rs"),
         quote! { impl ConnectionOperation { #sender }
             mod private { use super::*; #(#functions)* }

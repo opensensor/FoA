@@ -256,6 +256,9 @@ mod private {
                     TxMacParameters {
                         // The EAPOL data header starts with a placeholder.
                         override_seq_num: true,
+                        // EAPOL is unicast. ACK waiting makes a missing link
+                        // response visible to the configured MAC retry policy.
+                        wait_for_ack: true,
                         key_slot_index,
                         ..Default::default()
                     },

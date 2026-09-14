@@ -13,7 +13,7 @@ The station now requests driver assignment at these three transmit sites:
 | Generated frame | Transmit site | Change |
 | --- | --- | --- |
 | Established data, clear or CCMP-protected | `ConnectionRunner::run_msdu_tx` | Enable sequence assignment, retaining the key slot and wait-for-ACK setting. |
-| EAPOL key frames, including messages 2 and 4 | `ConnectionOperation::send_eapol_key_frame` | Enable sequence assignment, retaining all other MAC defaults. |
+| EAPOL key frames, including messages 2 and 4 | `ConnectionOperation::send_eapol_key_frame` | Enable sequence assignment and ACK waiting for the unicast transmission. |
 | Authentication and association requests | `ConnectionOperation::do_bidirectional_connection_step` | Enable assignment for each queued request, retaining the existing response/retry loop. |
 
 Deauthentication already enables assignment. Scanning is passive in this tree;

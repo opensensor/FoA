@@ -32,6 +32,7 @@ struct TxPlcpParameters {
 struct TxMacParameters {
     override_seq_num: bool,
     key_slot_index: Option<u8>,
+    wait_for_ack: bool,
     _unused: (),
 }
 enum RetryBehaviour {
@@ -54,10 +55,12 @@ impl MockTxEndpoint {
         length: usize,
         _: TxPlcpParameters,
         mac: TxMacParameters,
-        _: RetryBehaviour,
+        retry: RetryBehaviour,
     ) -> PendingTx {
         bytes.truncate(length);
         assert!(mac.override_seq_num);
+        assert!(mac.wait_for_ack, "Unicast EAPOL must request a MAC ACK");
+        assert!(matches!(retry, RetryBehaviour::RetryUntil(7)));
         self.transmissions
             .borrow_mut()
             .push((bytes, mac.key_slot_index));

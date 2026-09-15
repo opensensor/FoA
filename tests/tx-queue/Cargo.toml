@@ -9,9 +9,11 @@ publish = false
 [features]
 small-pool = []
 tx-trace = []
+tx-probe = []
 
 [dependencies]
 embassy-sync = { version = "=0.8.0", features = ["std"] }
+embassy-time = { version = "=0.5.1", features = ["std"] }
 futures-util = { version = "0.3.34", default-features = false }
 portable-atomic = "1.15.0"
 critical-section = { version = "1.2.0", features = ["std"] }

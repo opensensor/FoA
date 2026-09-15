@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - foa/src/tx_queue.rs
+      - foa/src/tx_probe.rs
       - foa/Cargo.toml
       - foa/src/tx_buffer_management.rs
       - tests/**
@@ -11,6 +12,7 @@ on:
   pull_request:
     paths:
       - foa/src/tx_queue.rs
+      - foa/src/tx_probe.rs
       - foa/Cargo.toml
       - foa/src/tx_buffer_management.rs
       - tests/**
@@ -35,3 +37,7 @@ jobs:
         run: tests/run-tx-queue.sh --release --features small-pool
       - name: Metadata-only TX completion telemetry
         run: tests/run-tx-queue.sh --features tx-trace
+      - name: Bounded tagged TX completion records
+        run: |
+          tests/run-tx-queue.sh --features tx-probe
+          tests/run-tx-queue.sh --release --features small-pool,tx-probe

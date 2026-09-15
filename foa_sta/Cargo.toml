@@ -50,6 +50,8 @@ log = ["dep:log", "foa/log", "defmt-or-log/log"]
 connection-trace = ["log"]
 # Single-station, bounded metadata recorder; no synchronous logging.
 handshake-probe = []
+# Carry owned gateway-echo identities from MSDU handoff into the TX queue.
+tx-probe = ["foa/tx-probe"]
 # Explicit hardware-validation traffic tracing; normal connections do not request rekeys.
 gtk-rekey-probe = ["rsn", "handshake-probe", "connection-trace"]
 defmt = ["dep:defmt", "defmt-or-log/defmt", "foa/defmt", "ieee80211/defmt"]

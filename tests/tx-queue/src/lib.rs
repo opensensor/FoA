@@ -10,6 +10,9 @@ pub const TX_BUFFER_SIZE: usize = 64;
 #[path = "../../../foa/src/tx_buffer_management.rs"]
 mod tx_buffer_management;
 pub use tx_buffer_management::TxBuffer;
+#[cfg(feature = "tx-probe")]
+#[path = "../../../foa/src/tx_probe.rs"]
+pub mod tx_probe;
 
 mod tx_queue {
     include!(concat!(

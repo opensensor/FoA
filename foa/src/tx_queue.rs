@@ -57,6 +57,8 @@ pub struct PendingFrame {
     mac_parameters: TxMacParameters,
     interface: u8,
     retry_behaviour: RetryBehaviour,
+    #[cfg(feature = "tx-probe")]
+    probe_tag: Option<crate::tx_probe::Tag>,
 }
 /// Data returned by transmitting.
 pub struct TxReturnData<'res> {
@@ -188,6 +190,9 @@ impl TxQueue {
             let counter = queue_state.increase_queue_counter();
             queue_state.capacity -= 1;
 
+            #[cfg(feature = "tx-probe")]
+            if let Some(tag) = frame.probe_tag { crate::tx_probe::queued(tag); }
+
             queue_state.queue_items[next_slot_index]
                 .0
                 .set(TxQueueSlot::Pending(frame));
@@ -262,6 +267,9 @@ impl<'res> TxQueueRunner<'res> {
                         let TxQueueSlot::Pending(pending_frame) = swapped_slot_state else {
                             unreachable!();
                         };
+
+                        #[cfg(feature = "tx-probe")]
+                        if let Some(tag) = pending_frame.probe_tag { crate::tx_probe::picked(tag); }
 
                         Some(
                             (InProgressTransmission {
@@ -359,6 +367,8 @@ impl InProgressTransmission<'_> {
                 &mut pending_frame.frame[..pending_frame.frame_length],
             )
             .await;
+        #[cfg(feature = "tx-probe")]
+        if let Some(tag) = pending_frame.probe_tag { crate::tx_probe::finished(tag, result); }
         // The endpoint may assign the sequence number before transmitting, so
         // read the safe header fields again after its actual completion.
         #[cfg(feature = "tx-trace")]
@@ -558,6 +568,32 @@ impl<'res> TxEndpoint<'res> {
             mac_parameters,
             interface: self.interface as u8,
             retry_behaviour,
+            #[cfg(feature = "tx-probe")]
+            probe_tag: None,
+        })
+    }
+    /// Enqueue with an optional diagnostic identity, preserving ordinary TX policy.
+    /// Dropping the returned handle does not discard its diagnostic completion.
+    #[cfg(feature = "tx-probe")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn transmit_edca_tagged(
+        &self,
+        edca_access_category: EdcaAccessCategory,
+        frame: TxBuffer<'res>,
+        frame_length: usize,
+        plcp_parameters: TxPlcpParameters,
+        mac_parameters: TxMacParameters,
+        retry_behaviour: RetryBehaviour,
+        probe_tag: Option<crate::tx_probe::Tag>,
+    ) -> PendingTransmission<'res> {
+        self.edca_tx_endpoints[edca_access_category.hardware_slot() - 1].enqueue_frame(PendingFrame {
+            frame: unsafe { core::mem::transmute::<TxBuffer<'res>, TxBuffer<'static>>(frame) },
+            frame_length,
+            plcp_parameters,
+            mac_parameters,
+            interface: self.interface as u8,
+            retry_behaviour,
+            probe_tag,
         })
     }
     /// Transmit using the beacon queue.

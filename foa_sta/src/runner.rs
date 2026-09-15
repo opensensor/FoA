@@ -287,6 +287,8 @@ impl ConnectionRunner<'_, '_> {
     ) -> ! {
         loop {
             let msdu = tx_runner.tx_buf().await;
+            #[cfg(feature = "tx-probe")]
+            let probe_tag = foa::tx_probe::accept_msdu(msdu);
 
             // We don't want to accidentally transmit a MSDU, while we're not on channel.
             if sta_tx_rx.in_off_channel_operation() {
@@ -354,8 +356,15 @@ impl ConnectionRunner<'_, '_> {
             else {
                 continue;
             };
-            let _ = sta_tx_rx.tx_endpoint.transmit_edca(
-                EdcaAccessCategory::default(),
+            #[cfg(not(feature = "tx-probe"))]
+            let transmit = |frame, length, plcp, mac, retry| {
+                sta_tx_rx.tx_endpoint.transmit_edca(EdcaAccessCategory::default(), frame, length, plcp, mac, retry)
+            };
+            #[cfg(feature = "tx-probe")]
+            let transmit = |frame, length, plcp, mac, retry| {
+                sta_tx_rx.tx_endpoint.transmit_edca_tagged(EdcaAccessCategory::default(), frame, length, plcp, mac, retry, probe_tag)
+            };
+            let _ = transmit(
                 tx_buf,
                 written,
                 TxPlcpParameters {

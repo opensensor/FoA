@@ -137,6 +137,55 @@ mod tests {
         f.assert_pool_recovered();
     }
 
+    #[cfg(feature = "tx-probe")]
+    #[test]
+    fn tagged_fire_and_forget_retains_results_reuse_and_incomplete_records() {
+        use crate::tx_probe as probe;
+        let f = Fixture::new();
+        let mut msdu = vec![0u8; 14 + 20 + 520];
+        msdu[12..14].copy_from_slice(&[8, 0]); msdu[14] = 0x45;
+        msdu[16..18].copy_from_slice(&540u16.to_be_bytes()); msdu[23] = 1;
+        msdu[30..34].copy_from_slice(&[10, 0, 0, 1]); msdu[34] = 8;
+        msdu[38..42].copy_from_slice(&[0x53, 0x53, 0, 8]); msdu[42..].fill(0x5a);
+        assert!(probe::accept_msdu(&msdu).is_none());
+        let start = probe::len();
+        let enqueue = |cycle| {
+            assert!(probe::arm(cycle, [10, 0, 0, 1]));
+            let tag = probe::accept_msdu(&msdu).unwrap();
+            let mut frame = f.pool.try_alloc().unwrap(); frame[..3].copy_from_slice(&[1,2,3]);
+            let pending = f.endpoint.transmit_edca_tagged(
+                Default::default(), frame, 3, Default::default(), Default::default(),
+                RetryBehaviour::RetryUntil(7), Some(tag));
+            assert_eq!(probe::entry((tag.ordinal()-1) as usize).unwrap().phase, probe::Phase::Queued);
+            drop(pending); tag
+        };
+        let first = enqueue(1);
+        f.finish_next(Err(TxError::AckTimeout));
+        let before = probe::entry(start).unwrap();
+        assert_eq!(before.completion, Some(Err(TxError::AckTimeout)));
+        assert_eq!(before.phase, probe::Phase::Finished);
+        // Recycle the physical queue slot before a second identical ICMP sequence.
+        for _ in 0..TX_BUFFER_COUNT { drop(f.enqueue(9)); f.finish_next(Ok(0)); }
+        let second = enqueue(2); assert_ne!(first, second);
+        f.finish_next(Ok(3));
+        assert_eq!(probe::entry(start).unwrap(), before);
+        assert_eq!(probe::entry(start+1).unwrap().completion, Some(Ok(3)));
+        let third = enqueue(2);
+        let (active, pending) = TxQueueRunner::try_receive(f.queue).unwrap();
+        assert_eq!(probe::entry(start+2).unwrap().phase, probe::Phase::Picked);
+        // Dropping a runner is not a successful radio completion.
+        drop(active); drop(pending);
+        let incomplete = probe::entry(start+2).unwrap();
+        assert_eq!(incomplete.tag, third); assert!(incomplete.completion.is_none());
+        assert!(incomplete.finished_us.is_none());
+        probe::disarm(); assert!(probe::accept_msdu(&msdu).is_none());
+        assert_eq!(probe::len(), start+3);
+        assert_eq!(probe::counters(), Default::default());
+        assert!(!probe::arm(0, [10,0,0,1]));
+        assert_eq!(probe::counters().invalid_events, 1);
+        f.assert_pool_recovered();
+    }
+
     #[test]
     fn awaited_transmissions_keep_completions_after_multiple_slot_wraps() {
         let f = Fixture::new();

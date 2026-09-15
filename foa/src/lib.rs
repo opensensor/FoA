@@ -47,6 +47,8 @@ mod lmac;
 mod rx_arc_pool;
 mod tx_buffer_management;
 mod tx_queue;
+#[cfg(feature = "tx-probe")]
+pub mod tx_probe;
 
 pub use bg_task::FoARunner;
 pub use lmac::*;

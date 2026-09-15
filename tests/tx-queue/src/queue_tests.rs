@@ -173,8 +173,12 @@ mod tests {
         let third = enqueue(2);
         let (active, pending) = TxQueueRunner::try_receive(f.queue).unwrap();
         assert_eq!(probe::entry(start+2).unwrap().phase, probe::Phase::Picked);
-        // Dropping a runner is not a successful radio completion.
-        drop(active); drop(pending);
+        // Cancel after polling the actual TX future into its radio wait.
+        // Cancellation must not acquire a manufactured completion result.
+        let mut endpoint = TxQueueEndpoint::new(f.radio);
+        let mut future = Box::pin(active.transmit(pending, &mut endpoint));
+        assert!(poll_once(future.as_mut()).is_pending());
+        drop(future);
         let incomplete = probe::entry(start+2).unwrap();
         assert_eq!(incomplete.tag, third); assert!(incomplete.completion.is_none());
         assert!(incomplete.finished_us.is_none());

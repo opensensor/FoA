@@ -42,3 +42,22 @@ boundary. It covers classification, bounded identity/storage, invalid lifecycle
 events, discarded handles retaining errors/retry counts, queue reuse, runner
 cancellation and pool recovery. The same suite runs with a three-buffer pool
 and release arithmetic. Hardware results are recorded by the HAL examples.
+
+## C3/S3 validation, 2026-09-14
+
+The fixed baseline/probe/probe/baseline comparison on each chip, followed by two
+ordinary-image restorations, completed all ten attempts: 400/400 gateway replies
+and 400/400 router echoes. All 160 instrumented requests retained a completed
+record and appeared with a matching reply in both AP Ethernet captures. Of
+those requests, 145 reported zero driver retries, 12 one retry, and 3 two retries.
+No recorder capacity, identity, ordering or scope-change error occurred.
+
+The earlier C3 exhausted-ACK failure did not recur and remains unresolved.
+Queue waits were at most 244 us on C3 and 155 us on S3; the longest interval from
+pickup to HAL completion was 98,456 us on S3 with two retries. That interval
+includes software, scheduling, hardware waits and existing PHY power control.
+It is not an on-air timing measurement or proof of a cause. Router RTT tails
+remain, and the finite comparison does not establish lower latency or loss.
+
+See the [HAL device report](https://github.com/opensensor/esp-wifi-hal/blob/main/docs/network/TX-PATH-PROBE-VALIDATION.md)
+for per-trial timing, source/ELF ownership checks and numerical provenance.
